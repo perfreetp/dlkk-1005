@@ -53,7 +53,21 @@ import type { LayoutPreset, ShortcutConfig } from '@/types'
 const { Title, Text, Paragraph } = Typography
 
 const SettingsWindow: React.FC = () => {
-  const { userSettings, updateUserSettings, resetUserSettings, currentLayout, setCurrentLayout } = useAppStore()
+  const {
+    userSettings,
+    updateUserSettings,
+    resetUserSettings,
+    currentLayout,
+    setCurrentLayout,
+    reports,
+    reportVersions,
+    importTasks,
+    printJobs,
+    clearReportVersions,
+    clearImportData,
+    clearPrintJobs,
+    clearReports,
+  } = useAppStore()
   const { message: antMessage } = AntApp.useApp()
 
   const [editingShortcut, setEditingShortcut] = useState<ShortcutConfig | null>(null)
@@ -650,6 +664,157 @@ const SettingsWindow: React.FC = () => {
                 <div>创建自定义布局</div>
               </Card>
             </div>
+          </Card>
+        </div>
+      ),
+    },
+    {
+      key: 'data',
+      label: (
+        <span>
+          <DeleteOutlined />
+          本机数据管理
+        </span>
+      ),
+      children: (
+        <div style={{ padding: 20, maxWidth: 900, margin: '0 auto' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="以下操作会清理本地存储的数据，删除后无法恢复，请谨慎操作"
+            style={{ marginBottom: 24 }}
+          />
+
+          <Row gutter={16} style={{ marginBottom: 24 }}>
+            <Col span={6}>
+              <Card size="small" style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 28, fontWeight: 600, color: '#1890ff' }}>
+                  {reports.length}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>报告总数</Text>
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card size="small" style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 28, fontWeight: 600, color: '#52c41a' }}>
+                  {reportVersions.length}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>历史版本数</Text>
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card size="small" style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 28, fontWeight: 600, color: '#722ed1' }}>
+                  {importTasks.length}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>导入任务数</Text>
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card size="small" style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 28, fontWeight: 600, color: '#fa8c16' }}>
+                  {printJobs.length}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>打印任务数</Text>
+              </Card>
+            </Col>
+          </Row>
+
+          <Card size="small" title="清理操作">
+            <List
+              size="large"
+              dataSource={[
+                {
+                  key: 'versions',
+                  title: '清理历史版本',
+                  desc: '删除所有报告的历史版本记录，当前报告内容不受影响',
+                  btnText: '清理版本',
+                  btnType: 'default' as const,
+                  action: () => {
+                    clearReportVersions()
+                    message.success('已清理全部历史版本')
+                  },
+                  confirmTitle: '确认清理所有历史版本？',
+                  confirmDesc: '版本记录将被永久删除，当前报告保持不变',
+                },
+                {
+                  key: 'import',
+                  title: '清理导入记录',
+                  desc: '删除所有导入任务记录和分组，已导入的检查数据不受影响',
+                  btnText: '清理导入',
+                  btnType: 'default' as const,
+                  action: () => {
+                    clearImportData()
+                    message.success('已清理全部导入记录')
+                  },
+                  confirmTitle: '确认清理所有导入记录？',
+                  confirmDesc: '任务记录将被永久删除，已导入的检查数据不会被删除',
+                },
+                {
+                  key: 'print',
+                  title: '清理打印记录',
+                  desc: '删除所有打印/刻录任务记录，不影响已完成的胶片和光盘',
+                  btnText: '清理打印',
+                  btnType: 'default' as const,
+                  action: () => {
+                    clearPrintJobs()
+                    message.success('已清理全部打印记录')
+                  },
+                  confirmTitle: '确认清理所有打印记录？',
+                  confirmDesc: '任务记录将被永久删除',
+                },
+                {
+                  key: 'reports',
+                  title: '清理全部报告（含版本）',
+                  desc: '删除所有诊断报告及历史版本，工作列表中的检查不会被删除',
+                  btnText: '清理全部报告',
+                  btnType: 'danger' as const,
+                  action: () => {
+                    clearReports()
+                    message.success('已清理全部报告及版本')
+                  },
+                  confirmTitle: '⚠️ 确认删除全部报告？',
+                  confirmDesc: '所有诊断报告和历史版本将被永久删除，此操作无法撤销！',
+                },
+              ]}
+              renderItem={(item) => (
+                <List.Item
+                  style={{ padding: '12px 0', borderBottom: '1px solid #303030' }}
+                  actions={[
+                    <Popconfirm
+                      key={item.key}
+                      title={item.confirmTitle}
+                      description={item.confirmDesc}
+                      okText="确认删除"
+                      okButtonProps={item.btnType === 'danger' ? { danger: true } : {}}
+                      cancelText="取消"
+                      onConfirm={item.action}
+                    >
+                      <Button
+                        type={item.btnType === 'danger' ? 'default' : item.btnType}
+                        danger={item.btnType === 'danger'}
+                        icon={<DeleteOutlined />}
+                      >
+                        {item.btnText}
+                      </Button>
+                    </Popconfirm>,
+                  ]}
+                >
+                  <List.Item.Meta
+                    avatar={
+                      <Avatar
+                        icon={<DeleteOutlined />}
+                        style={{
+                          background: item.btnType === 'danger' ? '#ff4d4f' : '#1890ff',
+                        }}
+                      />
+                    }
+                    title={item.title}
+                    description={<span style={{ color: '#707070' }}>{item.desc}</span>}
+                  />
+                </List.Item>
+              )}
+            />
           </Card>
         </div>
       ),

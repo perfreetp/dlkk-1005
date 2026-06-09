@@ -209,3 +209,51 @@ export interface UserSettings {
   measurementColor: string
   language: 'zh-CN' | 'en-US'
 }
+
+// ================================
+// 新增：报告历史版本
+// ================================
+export interface ReportVersion {
+  id: string
+  reportId: string
+  studyId: string
+  /** 操作类型：草稿保存/提交/通过/退回 */
+  action: 'save-draft' | 'submit' | 'approve' | 'reject'
+  findings: string
+  conclusion: string
+  status: Report['status']
+  reviewer?: string
+  rejectReason?: string
+  operatorName: string
+  createdAt: string
+  /** 快照时的报告完整信息，方便回显 */
+  snapshot: Partial<Report>
+}
+
+// ================================
+// 新增：导入归组（按 accessionNumber 合并多个文件）
+// ================================
+export interface ImportGroup {
+  id: string
+  accessionNumber: string
+  studyId?: string
+  patientName?: string
+  modality?: string
+  fileIds: string[] // 关联 ImportTask.id[]
+  createdAt: string
+  updatedAt: string
+}
+
+// ================================
+// 新增：工作量汇总项
+// ================================
+export interface WorkloadItem {
+  key: string
+  label: string
+  count: number
+  /** 筛选条件字段 */
+  filter: {
+    field: 'reviewer' | 'modality' | 'status'
+    value: string
+  }
+}

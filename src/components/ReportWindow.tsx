@@ -17,6 +17,10 @@ import {
   List,
   Avatar,
   Empty,
+  Drawer,
+  Timeline,
+  Alert,
+  Collapse,
 } from 'antd'
 import {
   FileTextOutlined,
@@ -33,7 +37,7 @@ import {
   CopyOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from '@/stores/appStore'
-import type { ReportTemplate, Study } from '@/types'
+import type { ReportTemplate, Study, ReportVersion } from '@/types'
 import dayjs from 'dayjs'
 
 const { Title, Text, Paragraph } = Typography
@@ -58,6 +62,19 @@ const ReportWindow: React.FC = () => {
   const [showApplyConfirm, setShowApplyConfirm] = useState(false)
   const [reviewNote, setReviewNote] = useState('')
   const [showReviewModal, setShowReviewModal] = useState<'approve' | 'reject' | null>(null)
+  const [showHistoryDrawer, setShowHistoryDrawer] = useState(false)
+
+  const actionConfig: Record<ReportVersion['action'], { label: string; color: string }> = {
+    'save-draft': { label: '草稿保存', color: 'default' },
+    submit: { label: '提交', color: 'blue' },
+    approve: { label: '审核通过', color: 'green' },
+    reject: { label: '审核退回', color: 'red' },
+  }
+
+  const versions = useMemo(() => {
+    if (!currentReport) return []
+    return useAppStore.getState().getVersionsByReportId(currentReport.id)
+  }, [currentReport, showHistoryDrawer])
 
   // 当选中检查变化时，自动加载/创建对应报告，保证进入同一检查能看到之前的报告
   useEffect(() => {
@@ -381,21 +398,14 @@ ${currentReport?.conclusion || '（未填写）'}
               options={reportTemplates.map((t) => ({ value: t.id, label: t.name }))}
               allowClear
             />
-            <Button
-              icon={<HistoryOutlined />}
-              onClick={() => {
-                if (currentReport?.createdAt) {
-                  message.info('此报告创建于: ' + currentReport.createdAt)
-                }
-              }}
-            >
-              历史版本
-            </Button>
           </Space>
           <div style={{ flex: 1 }} />
           <Space>
             <Button icon={<SaveOutlined />} onClick={saveDraft}>
               导出报告
+            </Button>
+            <Button icon={<HistoryOutlined />} onClick={() => setShowHistoryDrawer(true)}>
+              历史版本
             </Button>
             <Button icon={<SaveOutlined />} type="primary" ghost onClick={() => message.info('草稿已自动保存')}>
               保存草稿
@@ -648,6 +658,100 @@ ${currentReport?.conclusion || '（未填写）'}
           </div>
         )}
       </Modal>
+
+      <Drawer
+        title="报告历史版本"
+        width={520}
+        open={showHistoryDrawer}
+        onClose={() => setShowHistoryDrawer(false)}
+        destroyOnClose
+      >
+        {!currentReport ? (
+          <Empty description="请先选择检查创建报告" />
+        ) : versions.length === 0 ? (
+          <Empty description="暂无历史版本" />
+        ) : (
+          <Timeline
+            mode="left"
+            items={versions.map((v) => ({
+              color: actionConfig[v.action].color === 'green' ? 'green' : actionConfig[v.action].color === 'red' ? 'red' : actionConfig[v.action].color === 'blue' ? 'blue' : 'gray',
+              children: (
+                <div style={{ marginBottom: 16 }}>
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space>
+                      <Tag color={actionConfig[v.action].color}>
+                        {actionConfig[v.action].label}
+                      </Tag>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {v.createdAt}
+                      </Text>
+                      <Text style={{ fontSize: 12 }}>
+                        {v.operatorName}
+                      </Text>
+                    </Space>
+                    {v.action === 'reject' && v.rejectReason && (
+                      <Alert
+                        type="warning"
+                        showIcon
+                        message="退回原因"
+                        description={v.rejectReason}
+                      />
+                    )}
+                    <Collapse
+                      size="small"
+                      style={{ background: 'transparent' }}
+                      items={[
+                        {
+                          key: v.id,
+                          label: '查看详情',
+                          children: (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 4 }}>
+                              <div>
+                                <Text type="secondary" style={{ fontSize: 12 }}>状态</Text>
+                                <div style={{ marginTop: 2 }}>
+                                  <Tag color={
+                                    v.snapshot.status === 'approved' ? 'green' :
+                                    v.snapshot.status === 'rejected' ? 'red' :
+                                    v.snapshot.status === 'reviewing' ? 'orange' :
+                                    v.snapshot.status === 'submitted' ? 'blue' : 'default'
+                                  }>
+                                    {v.snapshot.status === 'draft' ? '草稿' :
+                                     v.snapshot.status === 'submitted' ? '已提交' :
+                                     v.snapshot.status === 'reviewing' ? '审核中' :
+                                     v.snapshot.status === 'approved' ? '已审核' : '已退回'}
+                                  </Tag>
+                                </div>
+                              </div>
+                              <div>
+                                <Text type="secondary" style={{ fontSize: 12 }}>影像所见</Text>
+                                <div style={{ marginTop: 4, fontSize: 13, lineHeight: 1.6, color: '#d0d0d0' }}>
+                                  {v.snapshot.findings || '（未填写）'}
+                                </div>
+                              </div>
+                              <div>
+                                <Text type="secondary" style={{ fontSize: 12 }}>诊断结论</Text>
+                                <div style={{ marginTop: 4, fontSize: 13, lineHeight: 1.6, color: '#d0d0d0' }}>
+                                  {v.snapshot.conclusion || '（未填写）'}
+                                </div>
+                              </div>
+                              <div>
+                                <Text type="secondary" style={{ fontSize: 12 }}>审核医生</Text>
+                                <div style={{ marginTop: 2, fontSize: 13 }}>
+                                  {v.snapshot.reviewer || v.snapshot.reviewingDoctor || '-'}
+                                </div>
+                              </div>
+                            </div>
+                          ),
+                        },
+                      ]}
+                    />
+                  </Space>
+                </div>
+              ),
+            }))}
+          />
+        )}
+      </Drawer>
     </div>
   )
 }

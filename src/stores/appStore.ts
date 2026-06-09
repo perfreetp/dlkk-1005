@@ -14,6 +14,8 @@ import type {
   WindowName,
   UserSettings,
   AnnotationTool,
+  ReportVersion,
+  ImportGroup,
 } from '@/types'
 import {
   mockStudies,
@@ -76,9 +78,23 @@ interface AppState {
   approveReport: (reportId: string) => void
   rejectReport: (reportId: string, reason: string) => void
 
+  reportVersions: ReportVersion[]
+  addReportVersion: (version: Omit<ReportVersion, 'id' | 'createdAt'>) => void
+  getVersionsByReportId: (reportId: string) => ReportVersion[]
+
   printJobs: PrintJob[]
   addPrintJob: (job: Omit<PrintJob, 'id' | 'createdAt' | 'status'>) => void
   updatePrintJob: (jobId: string, updates: Partial<PrintJob>) => void
+  retryPrintJob: (jobId: string) => string | null
+
+  importGroups: ImportGroup[]
+  getGroupByAccession: (accession: string) => ImportGroup | undefined
+  getGroupFiles: (groupId: string) => ImportTask[]
+
+  clearReportVersions: () => void
+  clearImportData: () => void
+  clearPrintJobs: () => void
+  clearReports: () => void
 
   userSettings: UserSettings
   updateUserSettings: (settings: Partial<UserSettings>) => void
@@ -131,6 +147,7 @@ export const useAppStore = create<AppState>()(
       images: mockImages,
 
       importTasks: mockImportTasks,
+      importGroups: [],
       addImportTask: (task) => {
         // 尝试从文件名提取检查号（DICOM 文件常包含），保留 ACC/CHK/STUDY 前缀
         let extractedAcc = task.accessionNumber
@@ -152,18 +169,56 @@ export const useAppStore = create<AppState>()(
           createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
           updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
         }
-        set((state) => ({ importTasks: [finalTask, ...state.importTasks] }))
-        // 自动调度（非手动匹配模式）
+        set((state) => {
+          // 归组：根据 accessionNumber 找已有组或创建新组
+          let newGroups = [...state.importGroups]
+          const acc = finalTask.accessionNumber || `unk-${Date.now()}`
+          let group = newGroups.find((g) => g.accessionNumber === acc)
+          if (!group) {
+            group = {
+              id: `grp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              accessionNumber: acc,
+              fileIds: [],
+              createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+              updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+            }
+            newGroups = [group, ...newGroups]
+          }
+          group.fileIds = [...new Set([...group.fileIds, finalTask.id])]
+          group.updatedAt = dayjs().format('YYYY-MM-DD HH:mm:ss')
+          return {
+            importTasks: [finalTask, ...state.importTasks],
+            importGroups: newGroups.map((g) => (g.id === group!.id ? { ...group! } : g)),
+          }
+        })
         scheduleImportTask(finalTask.id, { manualMatch: false })
       },
       updateImportTask: (taskId, updates) => {
-        set((state) => ({
-          importTasks: state.importTasks.map((t) =>
+        set((state) => {
+          const updatedTasks = state.importTasks.map((t) =>
             t.id === taskId
               ? { ...t, ...updates, updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss') }
               : t
-          ),
-        }))
+          )
+          // 如果任务成功，有 studyId 和 imageCount，同步到 study
+          let updatedStudies = state.studies
+          const t = updatedTasks.find((x) => x.id === taskId)
+          if (t && t.status === 'success' && t.studyId && t.imageCount && t.imageCount > 0) {
+            updatedStudies = state.studies.map((s) =>
+              s.id === t.studyId
+                ? {
+                    ...s,
+                    imageCount: s.imageCount + (t.imageCount || 0),
+                    updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+                  }
+                : s
+            )
+          }
+          return {
+            importTasks: updatedTasks,
+            studies: updatedStudies,
+          }
+        })
       },
       retryImportTask: (taskId) => {
         const st = get()
@@ -192,6 +247,16 @@ export const useAppStore = create<AppState>()(
         set((state) => ({
           importTasks: state.importTasks.filter((t) => t.id !== taskId),
         }))
+      },
+      getGroupByAccession: (accession) => {
+        return get().importGroups.find((g) => g.accessionNumber === accession)
+      },
+      getGroupFiles: (groupId) => {
+        const g = get().importGroups.find((x) => x.id === groupId)
+        if (!g) return []
+        return g.fileIds
+          .map((fid) => get().importTasks.find((t) => t.id === fid))
+          .filter(Boolean) as ImportTask[]
       },
 
       currentLayout: defaultLayouts[3],
@@ -332,6 +397,7 @@ export const useAppStore = create<AppState>()(
 
       reportTemplates: mockReportTemplates,
       reports: [],
+      reportVersions: [],
       currentReport: null,
       setCurrentReport: (report) => set({ currentReport: report }),
       createReport: (studyId) => {
@@ -376,9 +442,30 @@ export const useAppStore = create<AppState>()(
             ...updates,
             updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
           }
+          // 生成版本快照（仅当有内容变化时）
+          const hasChange =
+            (updates.findings && updates.findings !== state.currentReport.findings) ||
+            (updates.conclusion && updates.conclusion !== state.currentReport.conclusion)
+          const newVersion: ReportVersion | null = hasChange
+            ? {
+                id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                reportId: updatedReport.id,
+                studyId: updatedReport.studyId,
+                action: 'save-draft',
+                findings: updatedReport.findings,
+                conclusion: updatedReport.conclusion,
+                status: updatedReport.status,
+                reviewer: updatedReport.reviewer,
+                rejectReason: updatedReport.rejectReason,
+                operatorName: updatedReport.reportingDoctor || '李医生',
+                createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+                snapshot: { ...updatedReport },
+              }
+            : null
           return {
             currentReport: updatedReport,
             reports: state.reports.map((r) => (r.id === updatedReport.id ? updatedReport : r)),
+            reportVersions: newVersion ? [...state.reportVersions, newVersion] : state.reportVersions,
           }
         })
       },
@@ -392,9 +479,24 @@ export const useAppStore = create<AppState>()(
               submittedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
               updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
             }
+            const newVersion: ReportVersion = {
+              id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              reportId: updatedReport.id,
+              studyId: updatedReport.studyId,
+              action: 'submit',
+              findings: updatedReport.findings,
+              conclusion: updatedReport.conclusion,
+              status: updatedReport.status,
+              reviewer: updatedReport.reviewer,
+              rejectReason: updatedReport.rejectReason,
+              operatorName: updatedReport.reportingDoctor || '李医生',
+              createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+              snapshot: { ...updatedReport },
+            }
             return {
               currentReport: updatedReport,
               reports: state.reports.map((r) => (r.id === updatedReport.id ? updatedReport : r)),
+              reportVersions: [...state.reportVersions, newVersion],
               studies: state.studies.map((s) =>
                 s.id === currentReport.studyId
                   ? { ...s, status: 'pending', updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss') }
@@ -414,8 +516,23 @@ export const useAppStore = create<AppState>()(
             approvedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
             updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
           }
+          const newVersion: ReportVersion = {
+            id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            reportId: updatedReport.id,
+            studyId: updatedReport.studyId,
+            action: 'approve',
+            findings: updatedReport.findings,
+            conclusion: updatedReport.conclusion,
+            status: updatedReport.status,
+            reviewer: updatedReport.reviewer,
+            rejectReason: updatedReport.rejectReason,
+            operatorName: updatedReport.reviewer || updatedReport.reportingDoctor || '李医生',
+            createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+            snapshot: { ...updatedReport },
+          }
           return {
             reports: state.reports.map((r) => (r.id === updatedReport.id ? updatedReport : r)),
+            reportVersions: [...state.reportVersions, newVersion],
             currentReport: state.currentReport && state.currentReport.id === updatedReport.id ? updatedReport : state.currentReport,
             studies: state.studies.map((s) =>
               s.id === updatedReport.studyId
@@ -436,8 +553,23 @@ export const useAppStore = create<AppState>()(
             rejectedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
             updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
           }
+          const newVersion: ReportVersion = {
+            id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            reportId: updatedReport.id,
+            studyId: updatedReport.studyId,
+            action: 'reject',
+            findings: updatedReport.findings,
+            conclusion: updatedReport.conclusion,
+            status: updatedReport.status,
+            reviewer: updatedReport.reviewer,
+            rejectReason: reason,
+            operatorName: updatedReport.reviewer || updatedReport.reportingDoctor || '李医生',
+            createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+            snapshot: { ...updatedReport },
+          }
           return {
             reports: state.reports.map((r) => (r.id === updatedReport.id ? updatedReport : r)),
+            reportVersions: [...state.reportVersions, newVersion],
             currentReport: state.currentReport && state.currentReport.id === updatedReport.id ? updatedReport : state.currentReport,
             studies: state.studies.map((s) =>
               s.id === updatedReport.studyId
@@ -446,6 +578,19 @@ export const useAppStore = create<AppState>()(
             ),
           }
         })
+      },
+      addReportVersion: (version) => {
+        const v: ReportVersion = {
+          ...version,
+          id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+        }
+        set((s) => ({ reportVersions: [...s.reportVersions, v] }))
+      },
+      getVersionsByReportId: (reportId) => {
+        return get()
+          .reportVersions.filter((v) => v.reportId === reportId)
+          .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
       },
 
       printJobs: [],
@@ -458,7 +603,6 @@ export const useAppStore = create<AppState>()(
           createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
         }
         set((state) => ({ printJobs: [newJob, ...state.printJobs] }))
-        // 立即调度执行状态流转
         schedulePrintJob(newJob.id)
       },
       updatePrintJob: (jobId, updates) => {
@@ -466,6 +610,28 @@ export const useAppStore = create<AppState>()(
           printJobs: state.printJobs.map((j) => (j.id === jobId ? { ...j, ...updates } : j)),
         }))
       },
+      retryPrintJob: (jobId) => {
+        const old = get().printJobs.find((j) => j.id === jobId)
+        if (!old) return null
+        // 复制原任务，创建新的打印任务
+        const { id, status, progress, createdAt, startedAt, completedAt, errorMessage, ...rest } = old
+        const newJob: PrintJob = {
+          ...rest,
+          id: `job${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          status: 'queued',
+          progress: 0,
+          createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+        }
+        set((s) => ({ printJobs: [newJob, ...s.printJobs] }))
+        schedulePrintJob(newJob.id)
+        return newJob.id
+      },
+
+      // ============ 本机数据清理 ============
+      clearReportVersions: () => set({ reportVersions: [] }),
+      clearImportData: () => set({ importTasks: [], importGroups: [] }),
+      clearPrintJobs: () => set({ printJobs: [] }),
+      clearReports: () => set({ reports: [], currentReport: null, reportVersions: [] }),
 
       userSettings: defaultUserSettings,
       updateUserSettings: (settings) => {
@@ -491,6 +657,8 @@ export const useAppStore = create<AppState>()(
         studies: state.studies,
         printJobs: state.printJobs,
         importTasks: state.importTasks,
+        reportVersions: state.reportVersions,
+        importGroups: state.importGroups,
       }),
     }
   )

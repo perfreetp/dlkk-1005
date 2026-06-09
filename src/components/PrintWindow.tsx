@@ -25,6 +25,10 @@ import {
   List,
   Avatar,
   Input,
+  Drawer,
+  Descriptions,
+  Alert,
+  Popconfirm,
 } from 'antd'
 import {
   PrinterOutlined,
@@ -83,9 +87,12 @@ const PrintWindow: React.FC = () => {
     setSelectedStudy,
     toggleSeriesSelection,
     setActiveWindow,
+    retryPrintJob,
   } = useAppStore()
 
   const [activeTab, setActiveTab] = useState<'film' | 'disc'>('film')
+  const [showDetailDrawer, setShowDetailDrawer] = useState(false)
+  const [selectedJob, setSelectedJob] = useState<PrintJob | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [filmSize, setFilmSize] = useState('14x17')
   const [layoutIdx, setLayoutIdx] = useState(1)
@@ -222,6 +229,19 @@ const PrintWindow: React.FC = () => {
           {job.errorMessage && (
             <div style={{ marginTop: 4, color: '#ff4d4f', fontSize: 11 }}>错误: {job.errorMessage}</div>
           )}
+          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+            <Button
+              size="small"
+              type="link"
+              icon={<EyeOutlined />}
+              onClick={() => {
+                setSelectedJob(job)
+                setShowDetailDrawer(true)
+              }}
+            >
+              查看详情
+            </Button>
+          </div>
         </div>
       )
     })
@@ -1028,6 +1048,167 @@ const PrintWindow: React.FC = () => {
           ) : null}
         </Space>
       </div>
+
+      <Drawer
+        title="打印任务详情"
+        width={480}
+        open={showDetailDrawer}
+        onClose={() => {
+          setShowDetailDrawer(false)
+          setSelectedJob(null)
+        }}
+        destroyOnClose
+      >
+        {selectedJob && (() => {
+          const statusMeta = {
+            queued: { label: '排队中', color: 'default' },
+            printing: { label: selectedJob.type === 'film' ? '打印中' : '刻录中', color: 'processing' },
+            completed: { label: '完成', color: 'green' },
+            failed: { label: '失败', color: 'red' },
+          }[selectedJob.status]
+          const jobStudy = studies.find((s) => s.id === selectedJob.studyId)
+          const jobSeries = selectedJob.seriesIds
+            .map((sid) => series.find((s) => s.id === sid))
+            .filter(Boolean) as Series[]
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <Descriptions
+                size="small"
+                column={1}
+                bordered
+                labelStyle={{ width: 100, background: '#141414' }}
+                items={[
+                  {
+                    key: 'id',
+                    label: '任务ID',
+                    children: <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{selectedJob.id}</span>,
+                  },
+                  {
+                    key: 'type',
+                    label: '类型',
+                    children: <Tag color={selectedJob.type === 'film' ? 'blue' : 'green'}>{selectedJob.type === 'film' ? '胶片' : '光盘'}</Tag>,
+                  },
+                  {
+                    key: 'createdAt',
+                    label: '创建时间',
+                    children: selectedJob.createdAt,
+                  },
+                  {
+                    key: 'startedAt',
+                    label: '开始时间',
+                    children: selectedJob.startedAt || '-',
+                  },
+                  {
+                    key: 'completedAt',
+                    label: '完成时间',
+                    children: selectedJob.completedAt || '-',
+                  },
+                  {
+                    key: 'status',
+                    label: '状态',
+                    children: <Tag color={statusMeta.color}>{statusMeta.label}</Tag>,
+                  },
+                  {
+                    key: 'printer',
+                    label: '打印机名',
+                    children: jobStudy ? selectedJob.type === 'film' ? (selectedJob.printerName || '干式激光打印机-01') : (selectedJob.discType || 'DVD') : '-',
+                  },
+                  {
+                    key: 'spec',
+                    label: selectedJob.type === 'film' ? '胶片大小' : '光盘类型',
+                    children: selectedJob.type === 'film' ? (selectedJob.filmSize || '14x17') : (selectedJob.discType || 'DVD'),
+                  },
+                ]}
+              />
+
+              <div>
+                <Text type="secondary" style={{ fontSize: 12, marginBottom: 8, display: 'block' }}>
+                  选择的序列 ({jobSeries.length})
+                </Text>
+                <Card size="small" style={{ background: '#141414' }} bodyStyle={{ padding: 0 }}>
+                  <List
+                    size="small"
+                    dataSource={jobSeries}
+                    locale={{ emptyText: '无序列信息' }}
+                    renderItem={(ser) => (
+                      <List.Item style={{ padding: '8px 12px', borderBottom: '1px solid #2a2a2a' }}>
+                        <Space>
+                          <Tag color="purple" style={{ margin: 0 }}>{ser.modality}</Tag>
+                          <span style={{ fontSize: 13 }}>{ser.seriesDescription}</span>
+                        </Space>
+                        <span style={{ color: '#707070', fontSize: 12 }}>{ser.imageCount} 幅</span>
+                      </List.Item>
+                    )}
+                  />
+                </Card>
+              </div>
+
+              <div>
+                <Text type="secondary" style={{ fontSize: 12, marginBottom: 8, display: 'block' }}>
+                  {selectedJob.type === 'film' ? '胶片配置' : '刻录配置'}
+                </Text>
+                <Card size="small" style={{ background: '#141414' }}>
+                  <Row gutter={[16, 12]}>
+                    <Col span={12}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>行数</Text>
+                      <div style={{ fontWeight: 500 }}>{selectedJob.layout?.rows || layout.rows}</div>
+                    </Col>
+                    <Col span={12}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>列数</Text>
+                      <div style={{ fontWeight: 500 }}>{selectedJob.layout?.columns || layout.cols}</div>
+                    </Col>
+                    <Col span={12}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>份数</Text>
+                      <div style={{ fontWeight: 500 }}>{selectedJob.copies}</div>
+                    </Col>
+                    <Col span={12}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>显示标注</Text>
+                      <div style={{ fontWeight: 500 }}>{selectedJob.annotations ? '是' : '否'}</div>
+                    </Col>
+                    <Col span={24}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>显示患者信息</Text>
+                      <div style={{ fontWeight: 500 }}>{selectedJob.patientInfo ? '是' : '否'}</div>
+                    </Col>
+                  </Row>
+                </Card>
+              </div>
+
+              {selectedJob.status === 'failed' && (
+                <>
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="任务失败"
+                    description={selectedJob.errorMessage || '未知错误'}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <Popconfirm
+                      title="确认重新提交此任务？"
+                      description="将创建一个新的打印任务重新执行"
+                      okText="确认提交"
+                      cancelText="取消"
+                      onConfirm={() => {
+                        const newId = retryPrintJob(selectedJob.id)
+                        if (newId) {
+                          message.success('已重新提交任务')
+                          setShowDetailDrawer(false)
+                          setSelectedJob(null)
+                        } else {
+                          message.error('提交失败，请重试')
+                        }
+                      }}
+                    >
+                      <Button type="primary" danger>
+                        重新提交
+                      </Button>
+                    </Popconfirm>
+                  </div>
+                </>
+              )}
+            </div>
+          )
+        })()}
+      </Drawer>
     </div>
   )
 }

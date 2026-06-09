@@ -1,8 +1,9 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useMemo } from 'react'
 import {
   Button,
   Table,
   Input,
+  Select,
   Space,
   Tag,
   Progress,
@@ -13,6 +14,8 @@ import {
   Typography,
   Divider,
   Card,
+  Collapse,
+  Badge,
 } from 'antd'
 import {
   UploadOutlined,
@@ -29,7 +32,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useAppStore } from '@/stores/appStore'
-import type { ImportTask } from '@/types'
+import type { ImportTask, ImportGroup } from '@/types'
 import dayjs from 'dayjs'
 
 const { TextArea } = Input
@@ -47,12 +50,17 @@ const statusRender: Record<ImportTask['status'], { label: string; icon: React.Re
 const ImportWindow: React.FC = () => {
   const {
     importTasks,
+    importGroups,
     addImportTask,
     updateImportTask,
     retryImportTask,
     removeImportTask,
     studies,
+    getGroupFiles,
   } = useAppStore()
+
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [searchText, setSearchText] = useState('')
 
   const [accessionInput, setAccessionInput] = useState('')
   const [showMatchDialog, setShowMatchDialog] = useState(false)
@@ -339,6 +347,165 @@ const ImportWindow: React.FC = () => {
     processing: importTasks.filter((t) => ['pending', 'matching', 'importing', 'retry'].includes(t.status)).length,
   }
 
+  const getGroupStatusInfo = (group: ImportGroup) => {
+    const files = getGroupFiles(group.id)
+    if (files.length === 0) {
+      return { tag: '排队中', color: 'default' }
+    }
+    const hasFailed = files.some((f) => f.status === 'failed')
+    const allSuccess = files.every((f) => f.status === 'success')
+    const hasProcessing = files.some((f) => ['importing', 'matching'].includes(f.status))
+    if (hasFailed) return { tag: '部分失败', color: 'red' }
+    if (allSuccess) return { tag: '全部成功', color: 'green' }
+    if (hasProcessing) return { tag: '处理中', color: 'blue' }
+    return { tag: '排队中', color: 'default' }
+  }
+
+  const getGroupStudy = (group: ImportGroup) => {
+    const files = getGroupFiles(group.id)
+    const fileWithStudyId = files.find((f) => f.studyId)
+    if (fileWithStudyId?.studyId) {
+      return studies.find((s) => s.id === fileWithStudyId.studyId)
+    }
+    return studies.find((s) => s.accessionNumber === group.accessionNumber)
+  }
+
+  const getGroupModality = (group: ImportGroup) => {
+    const study = getGroupStudy(group)
+    if (study) return study.modality
+    const files = getGroupFiles(group.id)
+    const fileWithModality = files.find((f) => f.modality)
+    return fileWithModality?.modality || '-'
+  }
+
+  const filteredGroups = useMemo(() => {
+    let groups = importGroups
+    if (searchText) {
+      const lower = searchText.toLowerCase()
+      groups = groups.filter((g) => {
+        const study = getGroupStudy(g)
+        const patientName = study?.patient.name || ''
+        return (
+          g.accessionNumber.toLowerCase().includes(lower) ||
+          patientName.toLowerCase().includes(lower)
+        )
+      })
+    }
+    if (statusFilter !== 'all') {
+      groups = groups.filter((g) => {
+        const files = getGroupFiles(g.id)
+        if (statusFilter === 'success') return files.some((f) => f.status === 'success')
+        if (statusFilter === 'failed') return files.some((f) => f.status === 'failed')
+        if (statusFilter === 'processing') return files.some((f) => ['pending', 'matching', 'importing', 'retry'].includes(f.status))
+        return true
+      })
+    }
+    return groups
+  }, [importGroups, searchText, statusFilter, studies, importTasks])
+
+  const groupColumns: ColumnsType<ImportTask> = [
+    {
+      title: '文件名',
+      dataIndex: 'fileName',
+      key: 'fileName',
+      width: 220,
+      render: (name) => (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <ImportOutlined style={{ color: '#1890ff' }} />
+          <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{name}</span>
+        </div>
+      ),
+    },
+    {
+      title: '文件大小',
+      key: 'fileSize',
+      width: 100,
+      render: (_, record) => {
+        const size = record.fileSize || (1024 * 1024 * (5 + Math.random() * 20))
+        if (size < 1024) return `${size} B`
+        if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+        return `${(size / (1024 * 1024)).toFixed(1)} MB`
+      },
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 100,
+      render: (s: ImportTask['status']) => {
+        const cfg = statusRender[s]
+        return (
+          <span style={{ color: cfg.color, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {cfg.icon} {cfg.label}
+          </span>
+        )
+      },
+    },
+    {
+      title: '进度',
+      key: 'progress',
+      width: 180,
+      render: (_, record) => (
+        <div>
+          <Progress
+            percent={record.progress}
+            size="small"
+            showInfo
+            status={
+              record.status === 'failed'
+                ? 'exception'
+                : record.status === 'success'
+                ? 'success'
+                : 'active'
+            }
+          />
+          {record.errorMessage && (
+            <div style={{ fontSize: 11, color: '#ff7875', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <ExclamationCircleOutlined />
+              {record.errorMessage}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 160,
+      render: (_, record) => (
+        <Space size={4}>
+          {(record.status === 'failed' || record.status === 'retry') && (
+            <Tooltip title="重试/匹配">
+              <Button size="small" type="link" icon={<RetweetOutlined />} onClick={() => retryTask(record)}>
+                重试
+              </Button>
+            </Tooltip>
+          )}
+          {record.status === 'failed' && !record.studyId && (
+            <Tooltip title="手动匹配">
+              <Button size="small" type="link" icon={<SearchOutlined />} onClick={() => openMatchDialog(record)}>
+                匹配
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip title="删除">
+            <Button
+              size="small"
+              type="link"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => {
+                removeImportTask(record.id)
+              }}
+            >
+              删除
+            </Button>
+          </Tooltip>
+        </Space>
+      ),
+    },
+  ]
+
   return (
     <div className="window-content">
       <div className="toolbar-group">
@@ -354,11 +521,23 @@ const ImportWindow: React.FC = () => {
           </Button>
           <Divider type="vertical" style={{ height: 32 }} />
           <Input
-            style={{ width: 220 }}
-            placeholder="输入检查号快速匹配..."
+            style={{ width: 240 }}
+            placeholder="搜索检查号/患者姓名..."
             prefix={<SearchOutlined style={{ color: '#707070' }} />}
-            value={accessionInput}
-            onChange={(e) => setAccessionInput(e.target.value)}
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            allowClear
+          />
+          <Select
+            style={{ width: 140 }}
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={[
+              { value: 'all', label: '全部状态' },
+              { value: 'processing', label: '处理中' },
+              { value: 'success', label: '成功' },
+              { value: 'failed', label: '失败' },
+            ]}
           />
         </Space>
         <Space style={{ marginLeft: 'auto' }}>
@@ -385,20 +564,74 @@ const ImportWindow: React.FC = () => {
         </Space>
       </div>
 
-      <Table
-        columns={columns}
-        dataSource={importTasks}
-        rowKey="id"
-        size="middle"
-        locale={{
-          emptyText: <Empty description="暂无导入任务，请点击上方按钮导入DICOM文件" image={Empty.PRESENTED_IMAGE_SIMPLE} />,
-        }}
-        pagination={{
-          showSizeChanger: true,
-          pageSize: 15,
-          showTotal: (total) => `共 ${total} 个任务`,
-        }}
-      />
+      {filteredGroups.length === 0 ? (
+        <Empty
+          description="暂无导入分组，请点击上方按钮导入DICOM文件"
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          style={{ padding: '60px 0' }}
+        />
+      ) : (
+        <Collapse
+          defaultActiveKey={filteredGroups.map((g) => g.id)}
+          style={{ background: 'transparent', border: 'none' }}
+          items={filteredGroups.map((group) => {
+            const files = getGroupFiles(group.id)
+            const study = getGroupStudy(group)
+            const patientName = study?.patient.name || '-'
+            const modality = getGroupModality(group)
+            const statusInfo = getGroupStatusInfo(group)
+            const successCount = files.filter((f) => f.status === 'success').length
+            const totalCount = files.length
+            const progressPercent = totalCount > 0 ? Math.round((successCount / totalCount) * 100) : 0
+            return {
+              key: group.id,
+              label: (
+                <Space wrap style={{ width: '100%', padding: '4px 0' }}>
+                  <Text strong style={{ fontFamily: 'Consolas, monospace' }}>
+                    {group.accessionNumber}
+                  </Text>
+                  <Text>{patientName}</Text>
+                  <Tag color="purple" style={{ margin: 0 }}>
+                    {modality}
+                  </Tag>
+                  <Tag color={statusInfo.color} style={{ margin: 0 }}>
+                    {statusInfo.tag}
+                  </Tag>
+                  <div style={{ width: 180 }}>
+                    <Progress
+                      percent={progressPercent}
+                      size="small"
+                      format={() => `${successCount}/${totalCount}`}
+                      status={
+                        statusInfo.color === 'red' ? 'exception' :
+                        statusInfo.color === 'green' ? 'success' : 'active'
+                      }
+                    />
+                  </div>
+                  <Badge count={totalCount} showZero size="small" />
+                </Space>
+              ),
+              children: (
+                <div>
+                  <Table
+                    columns={groupColumns}
+                    dataSource={files}
+                    rowKey="id"
+                    size="small"
+                    pagination={false}
+                    locale={{
+                      emptyText: <Empty description="暂无文件" image={Empty.PRESENTED_IMAGE_SIMPLE} />,
+                    }}
+                  />
+                  <div style={{ padding: '8px 16px', textAlign: 'right', color: '#707070', fontSize: 12 }}>
+                    汇总：成功 {successCount} / 总 {totalCount}
+                  </div>
+                </div>
+              ),
+            }
+          })}
+        />
+      )}
 
       <Modal
         title="手动匹配检查记录"
