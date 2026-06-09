@@ -12,6 +12,7 @@ interface ViewportProps {
   studySeries: Series[]
   currentTool: AnnotationTool
   annotations: Annotation[]
+  resetDrawingsCounter?: number
   onAddAnnotation: (ann: Partial<Annotation> & { tool: AnnotationTool; points: { x: number; y: number }[] }) => void
   onDeleteAnnotation: (id: string) => void
   onUpdateAnnotation: (id: string, updates: Partial<Annotation>) => void
@@ -31,6 +32,7 @@ const Viewport: React.FC<ViewportProps> = ({
   studySeries,
   currentTool,
   annotations,
+  resetDrawingsCounter,
   onAddAnnotation,
   onDeleteAnnotation,
   onUpdateAnnotation,
@@ -71,6 +73,13 @@ const Viewport: React.FC<ViewportProps> = ({
     if (containerRef.current) ro.observe(containerRef.current)
     return () => ro.disconnect()
   }, [])
+
+  // 当 ViewerWindow 要求重置绘制（按Esc/清除标注/当前工具切换）时，清空正在绘制的中间状态
+  useEffect(() => {
+    if (resetDrawingsCounter !== undefined) {
+      setDrawState({ drawing: false, points: [] })
+    }
+  }, [resetDrawingsCounter])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -674,9 +683,13 @@ const Viewport: React.FC<ViewportProps> = ({
         return
       }
 
+      // 多点击工具（angle/area/freehand）：累计点，不立即重置
+      const isMultiClickTool = currentTool === 'angle' || currentTool === 'area' || currentTool === 'freehand'
+      const existingPoints = isMultiClickTool ? drawState.points : []
+
       setDrawState({
         drawing: true,
-        points: currentTool === 'angle' && drawState.points.length === 1 ? [...drawState.points, point] : [point],
+        points: [...existingPoints, point],
         tempPoints: point,
       })
     }
@@ -753,21 +766,35 @@ const Viewport: React.FC<ViewportProps> = ({
     const coords = clientToImagePx(e.clientX, e.clientY)
     const point = { x: coords.imgX, y: coords.imgY }
 
-    const allPoints =
-      currentTool === 'angle' && drawState.points.length === 2
-        ? drawState.points
-        : [...drawState.points, point]
-
-    if (currentTool === 'angle' && drawState.points.length < 2) {
-      // wait for 3rd point
-      setDrawState((prev) => ({
-        drawing: false,
-        points: [...prev.points, point],
-      }))
+    // --- 1. angle: 累计到3点（经过3次MouseDown）即完成 ---
+    if (currentTool === 'angle') {
+      if (drawState.points.length >= 3) {
+        // 三个顶点齐全，提交
+        const points = [...drawState.points.slice(0, 3)]
+        onAddAnnotation({
+          tool: 'angle',
+          points,
+          color: '#ffeb3b',
+          thickness: 2,
+        })
+        setDrawState({ drawing: false, points: [] })
+        return
+      }
+      // 还没集齐3点，停留在 drawing=false 等待下一次 MouseDown
+      setDrawState((prev) => ({ ...prev, drawing: false }))
       return
     }
 
-    if (allPoints.length >= 2 || currentTool === 'text') {
+    // --- 2. area / freehand: 逐点累计，每次mouseUp只保留固定点，等待双击闭合 ---
+    if (currentTool === 'area' || currentTool === 'freehand') {
+      // mouseUp 时不新增端点，所有点由 mouseDown 时产生，等待双击闭合
+      setDrawState((prev) => ({ ...prev, drawing: false, tempPoints: point }))
+      return
+    }
+
+    // --- 3. length / arrow / rectangle / ellipse: 两点拖拽完成 ---
+    const allPoints = [...drawState.points, point]
+    if (allPoints.length >= 2) {
       onAddAnnotation({
         tool: currentTool,
         points: allPoints,
@@ -777,6 +804,24 @@ const Viewport: React.FC<ViewportProps> = ({
     }
 
     setDrawState({ drawing: false, points: [] })
+  }
+
+  // area/freehand 双击完成闭合多边形
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    if (
+      (currentTool === 'area' || currentTool === 'freehand') &&
+      drawState.points.length >= 3
+    ) {
+      onAddAnnotation({
+        tool: currentTool,
+        points: [...drawState.points],
+        color: '#ffeb3b',
+        thickness: 2,
+      })
+      setDrawState({ drawing: false, points: [] })
+      e.preventDefault()
+      e.stopPropagation()
+    }
   }
 
   const handleWheel = (e: React.WheelEvent) => {
@@ -816,9 +861,16 @@ const Viewport: React.FC<ViewportProps> = ({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={() => {
-        setDrawState({ drawing: false, points: [] })
+        const isMultiClick = currentTool === 'angle' || currentTool === 'area' || currentTool === 'freehand'
+        if (isMultiClick && drawState.points.length > 0 && drawState.points.length < 100) {
+          // 多点击工具离开画布不清空，避免打断用户操作
+          setDrawState((prev) => ({ ...prev, drawing: false }))
+        } else {
+          setDrawState({ drawing: false, points: [] })
+        }
       }}
       onWheel={handleWheel}
+      onDoubleClick={handleDoubleClick}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}

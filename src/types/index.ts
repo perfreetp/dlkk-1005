@@ -66,15 +66,21 @@ export interface ImportTask {
   id: string
   fileName: string
   filePath: string
+  fileSize?: number
   studyId?: string
   accessionNumber?: string
   status: 'pending' | 'matching' | 'importing' | 'success' | 'failed' | 'retry'
   progress: number
   errorMessage?: string
+  matchSuccess?: boolean
   retryCount: number
   maxRetries: number
   createdAt: string
   updatedAt: string
+  completedAt?: string
+  imageCount?: number
+  modality?: string
+  patientName?: string
 }
 
 export type AnnotationTool =
@@ -139,15 +145,23 @@ export interface Report {
   id: string
   studyId: string
   templateId?: string
+  accessionNumber?: string
+  patientName?: string
+  patientGender?: '男' | '女' | string
+  patientAge?: string
+  modality?: string
   findings: string
   conclusion: string
   status: 'draft' | 'submitted' | 'reviewing' | 'approved' | 'rejected'
   reportingDoctor: string
+  reviewer?: string
   reviewingDoctor?: string
+  rejectReason?: string
   createdAt: string
   updatedAt: string
   submittedAt?: string
   approvedAt?: string
+  rejectedAt?: string
 }
 
 export interface PrintJob {
@@ -159,8 +173,15 @@ export interface PrintJob {
   annotations: boolean
   patientInfo: boolean
   status: 'queued' | 'printing' | 'completed' | 'failed'
+  progress?: number
   copies: number
   createdAt: string
+  startedAt?: string
+  completedAt?: string
+  errorMessage?: string
+  printerName?: string
+  filmSize?: string
+  discType?: string
 }
 
 export type WindowName =

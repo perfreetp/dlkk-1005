@@ -12,6 +12,8 @@ import {
   Badge,
   Modal,
   Input,
+  Popconfirm,
+  message,
 } from 'antd'
 import {
   PictureOutlined,
@@ -109,6 +111,7 @@ const ViewerWindow: React.FC = () => {
   const [textInput, setTextInput] = useState('')
   const [showTextDialog, setShowTextDialog] = useState(false)
   const [pendingTextPos, setPendingTextPos] = useState<{ x: number; y: number; vpId: string } | null>(null)
+  const [resetDrawingsCounter, setResetDrawingsCounter] = useState(0)
 
   const gridStyle: React.CSSProperties = {
     gridTemplateRows: `repeat(${currentLayout.rows}, 1fr)`,
@@ -227,6 +230,7 @@ const ViewerWindow: React.FC = () => {
           break
         case 'escape':
           setCurrentTool('none')
+          setResetDrawingsCounter((c) => c + 1)
           break
         case 'f':
           handleToolbarAction('reset-all')
@@ -358,6 +362,25 @@ const ViewerWindow: React.FC = () => {
           <Tooltip title="水平翻转"><Button className={`toolbar-btn ${activeVp?.flippedH ? 'active' : ''}`} icon={<SwapLeftOutlined />} onClick={() => handleToolbarAction('flip-h')} /></Tooltip>
           <Tooltip title="垂直翻转"><Button className={`toolbar-btn ${activeVp?.flippedV ? 'active' : ''}`} icon={<SwapOutlined />} onClick={() => handleToolbarAction('flip-v')} /></Tooltip>
           <Tooltip title="放大镜 (Z)"><Button className={`toolbar-btn ${activeVp?.magEnabled ? 'active' : ''}`} icon={<FullscreenOutlined />} onClick={() => handleToolbarAction('magnifier')} /></Tooltip>
+          <Divider type="vertical" style={{ margin: '0 4px' }} />
+          <Popconfirm
+            title="确认清除所有标注？"
+            description="所有视口中的长度、角度、面积等测量结果将一并清除，无法恢复。"
+            okText="清除"
+            cancelText="取消"
+            placement="bottom"
+            onConfirm={() => {
+              clearAnnotations()
+              setResetDrawingsCounter((c) => c + 1)
+              message.success('已清除全部标注')
+            }}
+          >
+            <Tooltip title="清除全部标注">
+              <Button className="toolbar-btn" danger icon={<DeleteOutlined />} disabled={annotations.length === 0}>
+                清除标注 ({annotations.length})
+              </Button>
+            </Tooltip>
+          </Popconfirm>
         </Space>
 
         <div style={{ flex: 1 }} />
@@ -576,6 +599,7 @@ const ViewerWindow: React.FC = () => {
                 studySeries={studySeries}
                 currentTool={currentTool}
                 annotations={annotations.filter((a) => a.viewportId === vp.id)}
+                resetDrawingsCounter={resetDrawingsCounter}
                 onAddAnnotation={(ann) => {
                   if (ann.tool === 'text' && !ann.text) {
                     setPendingTextPos({ ...ann.points[0], vpId: vp.id })
@@ -587,6 +611,9 @@ const ViewerWindow: React.FC = () => {
                       viewportId: vp.id,
                       seriesId: vp.seriesId || '',
                       imageId: String(vp.imageIndex),
+                      color: ann.color || '#ffeb3b',
+                      thickness: ann.thickness || 2,
+                      fontSize: ann.fontSize || 14,
                     })
                   }
                 }}

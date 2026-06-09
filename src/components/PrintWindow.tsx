@@ -151,19 +151,80 @@ const PrintWindow: React.FC = () => {
     })
     message.success(
       type === 'film'
-        ? `已添加 ${totalPrints} 张胶片到打印队列`
-        : `已创建光盘刻录任务`
+        ? `✅ 已添加 ${totalPrints} 张胶片到打印队列，开始自动处理`
+        : `✅ 已创建光盘刻录任务，开始自动处理`
     )
-    // Simulate processing
-    setTimeout(() => {
-      const job: PrintJob = printJobs[0]
-      if (job) {
-        updatePrintJob(job.id, { status: 'printing' })
-        setTimeout(() => {
-          updatePrintJob(job.id, { status: 'completed' })
-        }, 3000)
-      }
-    }, 1000)
+  }
+
+  // 渲染任务列表（分类型）
+  const renderJobList = (list: PrintJob[], label: string) => {
+    if (list.length === 0) {
+      return (
+        <Empty
+          description={`暂无${label === 'film' ? '胶片打印' : label === 'disc' ? '光盘刻录' : ''}任务`}
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          style={{ padding: '16px 0' }}
+        />
+      )
+    }
+    return list.map((job, idx) => {
+      const statusMeta = {
+        queued: { label: '排队中', color: 'default', icon: '⏳' },
+        printing: { label: job.type === 'film' ? '打印中' : '刻录中', color: 'processing', icon: '⚡' },
+        completed: { label: '完成', color: 'green', icon: '✅' },
+        failed: { label: '失败', color: 'red', icon: '❌' },
+      }[job.status]
+      return (
+        <div
+          key={job.id}
+          style={{
+            padding: 10,
+            marginBottom: 8,
+            border: '1px solid #303030',
+            borderRadius: 6,
+            background: job.status === 'completed' ? '#0f1f14' : job.status === 'failed' ? '#1f1010' : '#1a1a1a',
+            fontSize: 12,
+            position: 'relative',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Space size={6}>
+              <span>
+                {job.type === 'film' ? <PictureOutlined /> : <SafetyCertificateOutlined />}
+              </span>
+              <span style={{ fontWeight: 500 }}>
+                {statusMeta.icon} {job.type === 'film' ? '胶片打印' : '光盘刻录'} #{list.length - idx}
+              </span>
+              {job.type === 'film' && job.copies > 1 && (
+                <Tag color="geekblue" style={{ margin: 0, fontSize: 10 }}>
+                  {job.copies}份
+                </Tag>
+              )}
+            </Space>
+            <Tag color={statusMeta.color} style={{ margin: 0 }}>
+              {statusMeta.label}
+            </Tag>
+          </div>
+          {(job.status === 'printing' || job.status === 'queued') && (
+            <Progress
+              percent={job.progress || 0}
+              size="small"
+              style={{ marginTop: 8 }}
+              status={job.status === 'printing' ? 'active' : 'normal'}
+              showInfo
+              strokeColor={job.status === 'printing' ? '#1890ff' : undefined}
+            />
+          )}
+          <div style={{ marginTop: 6, color: '#707070', fontSize: 11, display: 'flex', justifyContent: 'space-between' }}>
+            <span>创建: {job.createdAt}</span>
+            <span>{job.completedAt ? `完成: ${job.completedAt}` : `序列数: ${job.seriesIds?.length || 0}`}</span>
+          </div>
+          {job.errorMessage && (
+            <div style={{ marginTop: 4, color: '#ff4d4f', fontSize: 11 }}>错误: {job.errorMessage}</div>
+          )}
+        </div>
+      )
+    })
   }
 
   return (
@@ -293,63 +354,34 @@ const PrintWindow: React.FC = () => {
 
           <div className="panel-section">
             <div className="panel-title">
-              <PrinterOutlined /> 打印队列
+              <PrinterOutlined /> 打印 / 刻录 队列
               <Tag color="blue" style={{ marginLeft: 8 }}>{printJobs.length}</Tag>
             </div>
             {printJobs.length === 0 ? (
               <Empty description="暂无任务" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: '16px 0' }} />
             ) : (
-              printJobs.map((job, idx) => (
-                <div
-                  key={job.id}
-                  style={{
-                    padding: 8,
-                    marginBottom: 6,
-                    border: '1px solid #303030',
-                    borderRadius: 4,
-                    background: '#1a1a1a',
-                    fontSize: 12,
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>
-                      {job.type === 'film' ? <PictureOutlined /> : <SafetyCertificateOutlined />} #{printJobs.length - idx}
-                    </span>
-                    <Tag
-                      color={
-                        job.status === 'completed'
-                          ? 'green'
-                          : job.status === 'printing'
-                          ? 'processing'
-                          : job.status === 'failed'
-                          ? 'red'
-                          : 'default'
-                      }
-                      style={{ margin: 0 }}
-                    >
-                      {job.status === 'queued'
-                        ? '排队中'
-                        : job.status === 'printing'
-                        ? '处理中'
-                        : job.status === 'completed'
-                        ? '完成'
-                        : '失败'}
-                    </Tag>
-                  </div>
-                  {job.status === 'printing' && (
-                    <Progress
-                      percent={50 + (idx % 3) * 20}
-                      size="small"
-                      style={{ marginTop: 4 }}
-                      showInfo={false}
-                      status="active"
-                    />
-                  )}
-                  <div style={{ marginTop: 4, color: '#707070', fontSize: 11 }}>
-                    {job.createdAt}
-                  </div>
-                </div>
-              ))
+              <Tabs
+                size="small"
+                defaultActiveKey="all"
+                style={{ marginTop: -4 }}
+                items={[
+                  {
+                    key: 'all',
+                    label: `全部 (${printJobs.length})`,
+                    children: renderJobList(printJobs, 'all'),
+                  },
+                  {
+                    key: 'film',
+                    label: `胶片 (${printJobs.filter((j) => j.type === 'film').length})`,
+                    children: renderJobList(printJobs.filter((j) => j.type === 'film'), 'film'),
+                  },
+                  {
+                    key: 'disc',
+                    label: `光盘 (${printJobs.filter((j) => j.type === 'disc').length})`,
+                    children: renderJobList(printJobs.filter((j) => j.type === 'disc'), 'disc'),
+                  },
+                ]}
+              />
             )}
           </div>
         </div>

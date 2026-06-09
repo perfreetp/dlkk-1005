@@ -49,6 +49,7 @@ const App: React.FC = () => {
     studies,
     importTasks,
     userSettings,
+    currentReport,
   } = useAppStore()
 
   const { message } = AntApp.useApp()
@@ -62,24 +63,85 @@ const App: React.FC = () => {
     return () => clearInterval(timer)
   }, [])
 
+  // Electron IPC 菜单事件监听
   useEffect(() => {
     const api = (window as any).electronAPI
     if (!api) return
+
+    // 切换窗口
+    const validWindows: string[] = ['worklist', 'import', 'viewer', 'report', 'print', 'settings']
     api.onSwitchWindow((name: WindowName) => {
-      if (['worklist', 'import', 'viewer', 'report', 'print', 'settings'].includes(name)) {
+      if (validWindows.includes(name)) {
         setActiveWindow(name)
+        message.info(`已切换到: ${windowConfig.find((w) => w.key === name)?.label || name}`)
       }
     })
+
+    // 导入菜单
     api.onMenuImport(() => {
       setActiveWindow('import')
+      setShowImportWindow(true)
     })
+
+    // 打印菜单
     api.onMenuPrint(() => {
       setActiveWindow('print')
     })
+
+    // 保存报告菜单
+    api.onMenuSaveReport(async () => {
+      if (!currentReport) {
+        message.warning('当前没有打开的报告，请先在工作列表中选择检查')
+        return
+      }
+      // 切换到报告窗口
+      if (activeWindow !== 'report') setActiveWindow('report')
+      // 触发报告导出
+      try {
+        const api2 = (window as any).electronAPI
+        if (api2 && api2.saveReport) {
+          const res = await api2.saveReport({
+            fileName: `报告_${currentReport.patientName}_${dayjs().format('YYYYMMDDHHmm')}.txt`,
+            content: `
+PACS 诊断报告
+=================================================
+检查号: ${currentReport.accessionNumber || '-'}
+患者姓名: ${currentReport.patientName || '-'}
+性别/年龄: ${currentReport.patientGender || '-'} / ${currentReport.patientAge || '-'}
+检查时间: ${currentReport.createdAt || '-'}
+检查类型: ${currentReport.modality || '-'}
+
+=============== 影像所见 ===============
+${currentReport.findings || '(未填写)'}
+
+=============== 诊断结论 ===============
+${currentReport.conclusion || '(未填写)'}
+
+报告医生: ${currentReport.reviewer || '李医生'}
+报告时间: ${dayjs().format('YYYY-MM-DD HH:mm:ss')}
+`.trim(),
+          })
+          if (res?.success) message.success(`报告已保存到: ${res.path}`)
+          else if (!res?.canceled) message.error('保存失败')
+        }
+      } catch (e: any) {
+        message.error('保存失败: ' + e?.message)
+      }
+    })
+
+    // 快捷键说明
     api.onShowShortcuts(() => {
       setShowShortcuts(true)
     })
-  }, [])
+
+    api.onShowHelp(() => {
+      message.info('用户手册：请按 F1 查看快捷键说明')
+    })
+
+    return () => {
+      // Electron preload 是一次性绑定，不需要严格解绑
+    }
+  }, [activeWindow, currentReport, message, setActiveWindow, setShowImportWindow, setShowShortcuts])
 
   const emergencyCount = studies.filter((s) => s.status === 'emergency').length
   const pendingCount = studies.filter((s) => s.status === 'pending').length

@@ -135,69 +135,23 @@ const ImportWindow: React.FC = () => {
 
   const startMatching = useCallback(
     (task: ImportTask) => {
-      updateImportTask(task.id, { status: 'matching', progress: 10 })
-      setTimeout(() => {
-        const matched = studies.find((s) => s.accessionNumber === task.accessionNumber)
-        if (matched) {
-          updateImportTask(task.id, {
-            status: 'importing',
-            progress: 20,
-            studyId: matched.id,
-          })
-          startImporting(task.id)
-        } else if (task.accessionNumber) {
-          updateImportTask(task.id, {
-            status: 'failed',
-            errorMessage: `检查号 "${task.accessionNumber}" 未在PACS中找到匹配记录`,
-          })
-        } else {
-          updateImportTask(task.id, {
-            status: 'failed',
-            errorMessage: 'DICOM文件中未提取到检查号，请手动匹配',
-          })
-        }
-      }, 800 + Math.random() * 700)
+      // 兼容旧代码但不做任何事，store 中的 scheduleImportTask 已自动处理
+      return task
     },
-    [updateImportTask, studies]
+    []
   )
 
   const startImporting = (taskId: string) => {
-    let progress = 20
-    const interval = setInterval(() => {
-      progress += Math.random() * 15 + 5
-      if (progress >= 100) {
-        progress = 100
-        clearInterval(interval)
-        updateImportTask(taskId, { status: 'success', progress: 100 })
-      } else if (progress > 60 && Math.random() < 0.1) {
-        clearInterval(interval)
-        const task = importTasks.find((t) => t.id === taskId)
-        if (task && task.retryCount < task.maxRetries) {
-          updateImportTask(taskId, {
-            status: 'retry',
-            progress: Math.floor(progress),
-            errorMessage: '网络传输中断，准备重试...',
-          })
-        } else {
-          updateImportTask(taskId, {
-            status: 'failed',
-            progress: Math.floor(progress),
-            errorMessage: '上传失败：服务器响应超时，已达最大重试次数',
-          })
-        }
-      } else {
-        updateImportTask(taskId, { progress: Math.floor(Math.min(progress, 99)) })
-      }
-    }, 400)
+    // 兼容旧代码但不做任何事
+    return taskId
   }
 
   const processPendingTasks = () => {
     const pending = importTasks.filter((t) => t.status === 'pending')
-    pending.forEach((t, idx) => {
-      setTimeout(() => startMatching(t), idx * 300)
-    })
-    if (pending.length > 0) {
-      message.info(`开始处理 ${pending.length} 个导入任务`)
+    if (pending.length === 0) {
+      message.info('暂无等待中的任务')
+    } else {
+      message.info(`将自动处理 ${pending.length} 个等待中的任务`)
     }
   }
 
@@ -395,8 +349,8 @@ const ImportWindow: React.FC = () => {
           <Button icon={<FolderOpenOutlined />} size="large" onClick={handleImportDirectory}>
             导入目录
           </Button>
-          <Button icon={<SyncOutlined />} onClick={processPendingTasks} disabled={stats.processing > 0}>
-            开始处理队列
+          <Button icon={<SyncOutlined />} onClick={processPendingTasks} disabled>
+            自动处理中
           </Button>
           <Divider type="vertical" style={{ height: 32 }} />
           <Input

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import type { StepsProps } from 'antd'
 import {
   Button,
@@ -48,6 +48,8 @@ const ReportWindow: React.FC = () => {
     setCurrentReport,
     updateReport,
     submitReport,
+    approveReport,
+    rejectReport,
     selectedStudyId,
     setActiveWindow,
   } = useAppStore()
@@ -56,6 +58,13 @@ const ReportWindow: React.FC = () => {
   const [showApplyConfirm, setShowApplyConfirm] = useState(false)
   const [reviewNote, setReviewNote] = useState('')
   const [showReviewModal, setShowReviewModal] = useState<'approve' | 'reject' | null>(null)
+
+  // 当选中检查变化时，自动加载/创建对应报告，保证进入同一检查能看到之前的报告
+  useEffect(() => {
+    if (!selectedStudyId) return
+    if (currentReport && currentReport.studyId === selectedStudyId) return
+    createReport(selectedStudyId)
+  }, [selectedStudyId, currentReport?.studyId])
 
   const study: Study | undefined = studies.find((s) => s.id === currentReport?.studyId || selectedStudyId)
   const patient = study?.patient
@@ -97,22 +106,15 @@ const ReportWindow: React.FC = () => {
   const handleReviewAction = (action: 'approve' | 'reject') => {
     if (!currentReport) return
     if (action === 'approve') {
-      updateReport({
-        status: 'approved',
-        reviewingDoctor: '审核医生',
-        approvedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
-      })
-      message.success('报告已审核通过')
+      approveReport(currentReport.id)
+      message.success('✅ 报告已审核通过，工作列表状态已同步')
     } else {
       if (!reviewNote.trim()) {
         message.error('请填写退回原因')
         return
       }
-      updateReport({
-        status: 'rejected',
-        reviewingDoctor: '审核医生',
-      })
-      message.warning('报告已退回，原因: ' + reviewNote)
+      rejectReport(currentReport.id, reviewNote)
+      message.warning('⚠️ 报告已退回，工作列表状态已同步为"退回"')
     }
     setShowReviewModal(null)
     setReviewNote('')
