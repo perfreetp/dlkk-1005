@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { Button, Modal, Tag, Space, Avatar, Badge, Dropdown, Drawer, List, Tooltip, App as AntApp, Divider } from 'antd'
 import {
   UnorderedListOutlined,
@@ -63,85 +63,118 @@ const App: React.FC = () => {
     return () => clearInterval(timer)
   }, [])
 
-  // Electron IPC 菜单事件监听
+  // ============== Electron IPC 菜单事件监听（只注册一次，用 ref 读最新状态） ==============
+  const lastFireRef = useRef<Record<string, number>>({})
+  const DEBOUNCE_MS = 250
+  // 防抖 + 记录上次触发时间，250ms 内重复点击忽略（防止连点多次）
+  const debounce = useCallback((key: string, fn: () => void) => {
+    const now = Date.now()
+    if (now - (lastFireRef.current[key] || 0) < DEBOUNCE_MS) return
+    lastFireRef.current[key] = now
+    try { fn() } catch (e) { console.error(e) }
+  }, [])
+
+  // 用 ref 保存最新值，避免 effect 重新注册
+  const stateRef = useRef({ activeWindow, currentReport, message, setActiveWindow, setShowImportWindow, setShowShortcuts })
+  useEffect(() => {
+    stateRef.current = { activeWindow, currentReport, message, setActiveWindow, setShowImportWindow, setShowShortcuts }
+  }, [activeWindow, currentReport, message, setActiveWindow, setShowImportWindow, setShowShortcuts])
+
   useEffect(() => {
     const api = (window as any).electronAPI
     if (!api) return
 
-    // 切换窗口
     const validWindows: string[] = ['worklist', 'import', 'viewer', 'report', 'print', 'settings']
-    api.onSwitchWindow((name: WindowName) => {
-      if (validWindows.includes(name)) {
-        setActiveWindow(name)
-        message.info(`已切换到: ${windowConfig.find((w) => w.key === name)?.label || name}`)
-      }
-    })
+    const unsubs: Array<() => void> = []
 
-    // 导入菜单
-    api.onMenuImport(() => {
-      setActiveWindow('import')
-      setShowImportWindow(true)
-    })
+    unsubs.push(api.onSwitchWindow((name: WindowName) => {
+      debounce('switch-window', () => {
+        const s = stateRef.current
+        if (validWindows.includes(name)) {
+          s.setActiveWindow(name)
+          s.message.success(`已切换到：${windowConfig.find((w) => w.key === name)?.label || name}`)
+        }
+      })
+    }))
 
-    // 打印菜单
-    api.onMenuPrint(() => {
-      setActiveWindow('print')
-    })
+    unsubs.push(api.onMenuImport(() => {
+      debounce('menu-import', () => {
+        const s = stateRef.current
+        s.setActiveWindow('import')
+        s.setShowImportWindow(true)
+        s.message.success('打开导入窗口')
+      })
+    }))
 
-    // 保存报告菜单
-    api.onMenuSaveReport(async () => {
-      if (!currentReport) {
-        message.warning('当前没有打开的报告，请先在工作列表中选择检查')
-        return
-      }
-      // 切换到报告窗口
-      if (activeWindow !== 'report') setActiveWindow('report')
-      // 触发报告导出
-      try {
-        const api2 = (window as any).electronAPI
-        if (api2 && api2.saveReport) {
-          const res = await api2.saveReport({
-            fileName: `报告_${currentReport.patientName}_${dayjs().format('YYYYMMDDHHmm')}.txt`,
-            content: `
+    unsubs.push(api.onMenuPrint(() => {
+      debounce('menu-print', () => {
+        const s = stateRef.current
+        s.setActiveWindow('print')
+        s.message.success('打开打印刻录')
+      })
+    }))
+
+    unsubs.push(api.onMenuSaveReport(async () => {
+      debounce('menu-save-report', () => { /* 异步函数单独处理防抖 */ })
+      const s = stateRef.current
+      if (!s.currentReport) { s.message.warning('当前没有打开的报告，请先选择检查'); return }
+      if (s.activeWindow !== 'report') s.setActiveWindow('report')
+      const now = Date.now()
+      if (now - (lastFireRef.current['save-report'] || 0) < 1500) return
+      lastFireRef.current['save-report'] = now
+
+      setTimeout(async () => {
+        try {
+          const api2 = (window as any).electronAPI
+          const r = s.currentReport!
+          if (api2?.saveReport) {
+            const res = await api2.saveReport({
+              fileName: `报告_${r.patientName || '患者'}_${dayjs().format('YYYYMMDDHHmm')}.txt`,
+              content: `
 PACS 诊断报告
 =================================================
-检查号: ${currentReport.accessionNumber || '-'}
-患者姓名: ${currentReport.patientName || '-'}
-性别/年龄: ${currentReport.patientGender || '-'} / ${currentReport.patientAge || '-'}
-检查时间: ${currentReport.createdAt || '-'}
-检查类型: ${currentReport.modality || '-'}
+检查号: ${r.accessionNumber || '-'}
+患者姓名: ${r.patientName || '-'}
+性别/年龄: ${r.patientGender || '-'} / ${r.patientAge || '-'}
+检查时间: ${r.createdAt || '-'}
+检查类型: ${r.modality || '-'}
 
 =============== 影像所见 ===============
-${currentReport.findings || '(未填写)'}
+${r.findings || '(未填写)'}
 
 =============== 诊断结论 ===============
-${currentReport.conclusion || '(未填写)'}
+${r.conclusion || '(未填写)'}
+${r.rejectReason ? `\n=============== 退回原因 ===============\n${r.rejectReason}` : ''}
 
-报告医生: ${currentReport.reviewer || '李医生'}
+报告医生: ${r.reviewer || '李医生'}
 报告时间: ${dayjs().format('YYYY-MM-DD HH:mm:ss')}
 `.trim(),
-          })
-          if (res?.success) message.success(`报告已保存到: ${res.path}`)
-          else if (!res?.canceled) message.error('保存失败')
+            })
+            if (res?.success) s.message.success(`报告已保存：${res.path}`)
+            else if (!res?.canceled) s.message.error('保存失败')
+          }
+        } catch (e: any) {
+          s.message.error('保存失败：' + (e?.message || String(e)))
         }
-      } catch (e: any) {
-        message.error('保存失败: ' + e?.message)
-      }
-    })
+      }, 0)
+    }))
 
-    // 快捷键说明
-    api.onShowShortcuts(() => {
-      setShowShortcuts(true)
-    })
+    unsubs.push(api.onShowShortcuts(() => {
+      debounce('show-shortcuts', () => {
+        stateRef.current.setShowShortcuts(true)
+      })
+    }))
 
-    api.onShowHelp(() => {
-      message.info('用户手册：请按 F1 查看快捷键说明')
-    })
+    unsubs.push(api.onShowHelp(() => {
+      debounce('show-help', () => {
+        stateRef.current.message.info('帮助：按 F1 查看快捷键说明')
+      })
+    }))
 
     return () => {
-      // Electron preload 是一次性绑定，不需要严格解绑
+      unsubs.forEach((off) => { try { off() } catch (_) { /* noop */ } })
     }
-  }, [activeWindow, currentReport, message, setActiveWindow, setShowImportWindow, setShowShortcuts])
+  }, [debounce])
 
   const emergencyCount = studies.filter((s) => s.status === 'emergency').length
   const pendingCount = studies.filter((s) => s.status === 'pending').length

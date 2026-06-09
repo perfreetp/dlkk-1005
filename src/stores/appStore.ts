@@ -132,11 +132,14 @@ export const useAppStore = create<AppState>()(
 
       importTasks: mockImportTasks,
       addImportTask: (task) => {
-        // 尝试从文件名提取检查号（DICOM 文件常包含）
+        // 尝试从文件名提取检查号（DICOM 文件常包含），保留 ACC/CHK/STUDY 前缀
         let extractedAcc = task.accessionNumber
         if (!extractedAcc) {
           const nameMatch = task.fileName.match(/(ACC|CHK|STUDY)?[-_]?(\d{6,12})/i)
-          if (nameMatch) extractedAcc = nameMatch[2]
+          if (nameMatch) {
+            const prefix = nameMatch[1] ? nameMatch[1].toUpperCase() : ''
+            extractedAcc = `${prefix}${nameMatch[2]}`
+          }
         }
         const finalTask: ImportTask = {
           ...task,
@@ -175,11 +178,13 @@ export const useAppStore = create<AppState>()(
           return
         }
         const manual = !!task.studyId
+        const nextCount = (task.retryCount || 0) + 1
         st.updateImportTask(taskId, {
-          status: manual ? 'importing' : 'pending',
-          progress: 0,
-          errorMessage: undefined,
-          retryCount: (task.retryCount || 0) + 1,
+          // 立即切到明确状态：手动匹配→importing；自动匹配→matching（不再是含糊的 pending）
+          status: manual ? 'importing' : 'matching',
+          progress: manual ? 20 : 10,
+          errorMessage: `正在第${nextCount}次重试...`,
+          retryCount: nextCount,
         })
         scheduleImportTask(taskId, { manualMatch: manual })
       },
@@ -481,6 +486,11 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         userSettings: state.userSettings,
         currentLayout: state.currentLayout,
+        reports: state.reports,
+        currentReport: state.currentReport,
+        studies: state.studies,
+        printJobs: state.printJobs,
+        importTasks: state.importTasks,
       }),
     }
   )
@@ -525,7 +535,11 @@ function schedulePrintJob(jobId: string) {
 }
 
 // 导入任务调度器：pending → matching → importing → success / failed
+// 加超时保护：matching ≤3s，importing ≤ 15s，超时立即失败不一直转圈
 export function scheduleImportTask(taskId: string, { manualMatch = false }: { manualMatch?: boolean } = {}) {
+  const MATCHING_TIMEOUT_MS = 3000
+  const IMPORTING_TIMEOUT_MS = 15000
+
   setTimeout(() => {
     const st = useAppStore.getState()
     const task = st.importTasks.find((t) => t.id === taskId)
@@ -538,10 +552,29 @@ export function scheduleImportTask(taskId: string, { manualMatch = false }: { ma
       const t = s.importTasks.find((x) => x.id === taskId)
       if (!t || ['success', 'failed'].includes(t.status)) return
 
-      s.updateImportTask(taskId, { status: 'matching', progress: 10 })
+      s.updateImportTask(taskId, { status: 'matching', progress: 10, errorMessage: '正在匹配检查号...' })
+
+      // 超时保护：3s 还没匹配结果就判失败
+      let finished = false
+      const timer = setTimeout(() => {
+        if (finished) return
+        finished = true
+        const sTime = useAppStore.getState()
+        const tTime = sTime.importTasks.find((x) => x.id === taskId)
+        if (!tTime || ['success', 'failed'].includes(tTime.status)) return
+        sTime.updateImportTask(taskId, {
+          status: 'failed',
+          progress: 10,
+          matchSuccess: false,
+          errorMessage: '匹配超时：PACS服务器响应慢，可重试或手动匹配',
+        })
+      }, MATCHING_TIMEOUT_MS)
 
       // 匹配：先根据 studyId，再根据 accessionNumber
       setTimeout(() => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
         const s2 = useAppStore.getState()
         const t2 = s2.importTasks.find((x) => x.id === taskId)
         if (!t2 || ['success', 'failed'].includes(t2.status)) return
@@ -558,6 +591,8 @@ export function scheduleImportTask(taskId: string, { manualMatch = false }: { ma
             patientName: foundStudy.patient.name,
             modality: foundStudy.modality,
             matchSuccess: true,
+            progress: 20,
+            errorMessage: undefined,
           })
           goImporting()
         } else {
@@ -575,27 +610,47 @@ export function scheduleImportTask(taskId: string, { manualMatch = false }: { ma
       }, 700 + Math.random() * 500)
     }
 
-    // Step 2: 导入（进度递增）
+    // Step 2: 导入（进度递增 + 整体超时15s）
     const goImporting = () => {
       const s = useAppStore.getState()
       const t = s.importTasks.find((x) => x.id === taskId)
       if (!t || ['success', 'failed'].includes(t.status)) return
       s.updateImportTask(taskId, { status: 'importing', progress: 20, errorMessage: undefined })
       let p = 20
+      let finished = false
+
+      // 超时保护：15秒强制结束
+      const timer = setTimeout(() => {
+        if (finished) return
+        finished = true
+        const sTime = useAppStore.getState()
+        const tTime = sTime.importTasks.find((x) => x.id === taskId)
+        if (!tTime || ['success', 'failed'].includes(tTime.status)) return
+        sTime.updateImportTask(taskId, {
+          status: 'failed',
+          progress: Math.round(p),
+          errorMessage: '导入超时：网络不稳定，已自动停止，请重试',
+          retryCount: (tTime.retryCount || 0) + 1,
+        })
+      }, IMPORTING_TIMEOUT_MS)
+
       const tick = () => {
+        if (finished) return
         const s2 = useAppStore.getState()
         const t2 = s2.importTasks.find((x) => x.id === taskId)
-        if (!t2 || ['success', 'failed'].includes(t2.status)) return
+        if (!t2 || ['success', 'failed'].includes(t2.status)) { finished = true; clearTimeout(timer); return }
         p += Math.random() * 12 + 4
         if (p >= 100) {
-          // 完成：手动匹配一定成功，非手动有小概率失败
-          const willFail = !manualMatch && !t2.studyId && Math.random() < 0.1 && (t2.retryCount || 0) < 1
+          finished = true
+          clearTimeout(timer)
+          // 手动匹配一定成功；非手动且没有studyId的，第一次失败（15%），后面重试都成功
+          const willFail = !manualMatch && !t2.studyId && Math.random() < 0.15 && (t2.retryCount || 0) < 1
           if (willFail) {
             s2.updateImportTask(taskId, {
               status: 'failed',
               progress: 85,
               errorMessage: '网络中断：上传超时，可点击重试',
-              retryCount: (t2.retryCount || 0),
+              retryCount: (t2.retryCount || 0) + 1,
             })
           } else {
             s2.updateImportTask(taskId, {
@@ -603,6 +658,7 @@ export function scheduleImportTask(taskId: string, { manualMatch = false }: { ma
               progress: 100,
               imageCount: 120 + Math.floor(Math.random() * 200),
               completedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+              errorMessage: undefined,
             })
           }
           return
@@ -615,14 +671,11 @@ export function scheduleImportTask(taskId: string, { manualMatch = false }: { ma
 
     // 起点
     if (manualMatch) {
-      // 手动匹配：直接进入导入，跳过匹配
       goImporting()
     } else if (task.studyId) {
-      // 已经有匹配过的studyId，也直接导入
       goImporting()
     } else {
-      // 普通流程：先匹配
       goMatching()
     }
-  }, 300)
+  }, 200)
 }
