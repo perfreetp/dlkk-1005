@@ -65,6 +65,10 @@ const WorklistWindow: React.FC = () => {
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
   const [viewMode, setViewMode] = useState<'list' | 'workload'>('list')
   const [reviewerFilter, setReviewerFilter] = useState<string>('all')
+  const [enforceToday, setEnforceToday] = useState(false)
+
+  const todayLabel = dayjs().format('YYYY-MM-DD')
+  const todayStr = todayLabel
 
   const statusCounts = useMemo(() => {
     const counts: Record<ExaminationStatus, number> = {
@@ -148,6 +152,7 @@ const WorklistWindow: React.FC = () => {
   }, [todayStudies])
 
   const handleWorkloadClick = (type: 'reviewer' | 'modality' | 'status', value: string) => {
+    // 只追加对应维度的筛选条件，不覆盖医生原有的搜索/日期/其他筛选
     if (type === 'reviewer') {
       setReviewerFilter(value)
     } else if (type === 'modality') {
@@ -155,6 +160,8 @@ const WorklistWindow: React.FC = () => {
     } else if (type === 'status') {
       setStatusFilter(value as ExaminationStatus)
     }
+    // 额外锁定"仅今日"条件（只缩小范围不覆盖原 dateRange）
+    setEnforceToday(true)
     setViewMode('list')
   }
 
@@ -167,6 +174,7 @@ const WorklistWindow: React.FC = () => {
           const reviewer = s.referringPhysician || '李医生'
           if (reviewer !== reviewerFilter) return false
         }
+        if (enforceToday && s.studyDate !== todayStr) return false
         if (searchText) {
           const lower = searchText.toLowerCase()
           if (
@@ -189,7 +197,7 @@ const WorklistWindow: React.FC = () => {
         if (pa !== pb) return pa - pb
         return dayjs(b.updatedAt).valueOf() - dayjs(a.updatedAt).valueOf()
       })
-  }, [studies, statusFilter, modalityFilter, reviewerFilter, searchText, dateRange])
+  }, [studies, statusFilter, modalityFilter, reviewerFilter, searchText, dateRange, enforceToday, todayStr])
 
   const openViewer = (study: Study) => {
     setSelectedStudy(study.id)
@@ -376,7 +384,7 @@ const WorklistWindow: React.FC = () => {
               />
               <RangePicker
                 value={dateRange as any}
-                onChange={(v) => setDateRange(v as any)}
+                onChange={(v) => { setDateRange(v as any); if (v) setEnforceToday(false) }}
                 style={{ width: 260 }}
               />
               <Button icon={<FilterOutlined />} onClick={() => {
@@ -385,6 +393,7 @@ const WorklistWindow: React.FC = () => {
                 setModalityFilter('all')
                 setReviewerFilter('all')
                 setDateRange(null)
+                setEnforceToday(false)
               }}>
                 重置筛选
               </Button>
@@ -392,6 +401,11 @@ const WorklistWindow: React.FC = () => {
           )}
         </Space>
         <Space>
+          {viewMode === 'list' && (
+            <Button icon={<BarChartOutlined />} onClick={() => setViewMode('workload')}>
+              返回工作量视图
+            </Button>
+          )}
           <Button icon={<ReloadOutlined />} />
           <Segmented
             value={viewMode}
@@ -406,8 +420,8 @@ const WorklistWindow: React.FC = () => {
 
       {viewMode === 'list' && (
         <>
-          <div className="toolbar-group" style={{ borderBottom: '1px solid #303030' }}>
-            <div className="worklist-filters">
+          <div className="toolbar-group" style={{ borderBottom: '1px solid #303030', paddingTop: 4, paddingBottom: 4, minHeight: 44, display: 'flex', alignItems: 'center' }}>
+            <div className="worklist-filters" style={{ flex: 1 }}>
               <div
                 className={`filter-chip ${statusFilter === 'all' ? 'active' : ''}`}
                 onClick={() => setStatusFilter('all')}
@@ -425,6 +439,28 @@ const WorklistWindow: React.FC = () => {
                 </div>
               ))}
             </div>
+            <Space size={8}>
+              {enforceToday && (
+                <Tag color="blue" closable onClose={() => setEnforceToday(false)}>
+                  仅今日 · {todayLabel}
+                </Tag>
+              )}
+              {reviewerFilter !== 'all' && (
+                <Tag color="cyan" closable onClose={() => setReviewerFilter('all')}>
+                  医生：{reviewerFilter}
+                </Tag>
+              )}
+              {searchText && (
+                <Tag color="purple" closable onClose={() => setSearchText('')}>
+                  搜索：{searchText}
+                </Tag>
+              )}
+              {modalityFilter !== 'all' && (
+                <Tag color="geekblue" closable onClose={() => setModalityFilter('all')}>
+                  类型：{modalityFilter}
+                </Tag>
+              )}
+            </Space>
           </div>
 
           <Table<Study>

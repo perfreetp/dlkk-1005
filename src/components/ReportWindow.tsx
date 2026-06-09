@@ -35,6 +35,7 @@ import {
   UserOutlined,
   CalendarOutlined,
   CopyOutlined,
+  DiffOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from '@/stores/appStore'
 import type { ReportTemplate, Study, ReportVersion } from '@/types'
@@ -673,82 +674,184 @@ ${currentReport?.conclusion || '（未填写）'}
         ) : (
           <Timeline
             mode="left"
-            items={versions.map((v) => ({
-              color: actionConfig[v.action].color === 'green' ? 'green' : actionConfig[v.action].color === 'red' ? 'red' : actionConfig[v.action].color === 'blue' ? 'blue' : 'gray',
-              children: (
-                <div style={{ marginBottom: 16 }}>
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Space>
-                      <Tag color={actionConfig[v.action].color}>
-                        {actionConfig[v.action].label}
-                      </Tag>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        {v.createdAt}
-                      </Text>
-                      <Text style={{ fontSize: 12 }}>
-                        {v.operatorName}
-                      </Text>
-                    </Space>
-                    {v.action === 'reject' && v.rejectReason && (
-                      <Alert
-                        type="warning"
-                        showIcon
-                        message="退回原因"
-                        description={v.rejectReason}
+            items={versions.map((v, idx) => {
+              const prev = idx < versions.length - 1 ? versions[idx + 1] : null
+              const diff = v.changesSummary
+              const renderInlineDiff = (oldStr: string, newStr: string) => {
+                const oldLines = (oldStr || '').split('\n')
+                const newLines = (newStr || '').split('\n')
+                const maxLen = Math.max(oldLines.length, newLines.length)
+                const rows: Array<{ type: 'same' | 'added' | 'removed' | 'changed'; old: string; n: string }> = []
+                for (let i = 0; i < maxLen; i++) {
+                  const o = oldLines[i] ?? ''
+                  const n = newLines[i] ?? ''
+                  if (o === n) rows.push({ type: 'same', old: o, n })
+                  else if (o && !n) rows.push({ type: 'removed', old: o, n })
+                  else if (!o && n) rows.push({ type: 'added', old: o, n })
+                  else rows.push({ type: 'changed', old: o, n })
+                }
+                const isOnlySame = rows.every((r) => r.type === 'same')
+                if (isOnlySame) return <Text type="secondary">与上一版一致</Text>
+                return (
+                  <div style={{ fontSize: 12, lineHeight: 1.8, border: '1px solid #303030', borderRadius: 6, overflow: 'hidden' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', background: '#1f1f1f', padding: '6px 10px', borderBottom: '1px solid #303030', fontWeight: 600 }}>
+                      <span>上一版</span>
+                      <span>本版</span>
+                    </div>
+                    {rows.map((r, i) => (
+                      <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: i < rows.length - 1 ? '1px dashed #2a2a2a' : undefined }}>
+                        <div
+                          style={{
+                            padding: '4px 10px',
+                            background: r.type === 'removed' ? '#3a1d1d' : r.type === 'changed' ? '#3a2f1d' : 'transparent',
+                            color: r.type === 'removed' ? '#ff8c8c' : r.type === 'same' ? '#888' : undefined,
+                            fontFamily: 'monospace',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-all',
+                          }}
+                        >
+                          {r.old || '—'}
+                        </div>
+                        <div
+                          style={{
+                            padding: '4px 10px',
+                            background: r.type === 'added' ? '#1d3a1d' : r.type === 'changed' ? '#1d3a3a' : 'transparent',
+                            color: r.type === 'added' ? '#8cff8c' : r.type === 'same' ? '#888' : undefined,
+                            fontFamily: 'monospace',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-all',
+                          }}
+                        >
+                          {r.n || '—'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+              return {
+                color:
+                  actionConfig[v.action].color === 'green'
+                    ? 'green'
+                    : actionConfig[v.action].color === 'red'
+                    ? 'red'
+                    : actionConfig[v.action].color === 'blue'
+                    ? 'blue'
+                    : 'gray',
+                children: (
+                  <div style={{ marginBottom: 16 }}>
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Tag color={actionConfig[v.action].color}>
+                          {actionConfig[v.action].label}
+                        </Tag>
+                        {diff?.findings && (
+                          <>
+                            {diff.findings.added > 0 && <Tag color="green">影像所见 +{diff.findings.added}</Tag>}
+                            {diff.findings.removed > 0 && <Tag color="red">影像所见 -{diff.findings.removed}</Tag>}
+                          </>
+                        )}
+                        {diff?.conclusion && (
+                          <>
+                            {diff.conclusion.added > 0 && <Tag color="green">结论 +{diff.conclusion.added}</Tag>}
+                            {diff.conclusion.removed > 0 && <Tag color="red">结论 -{diff.conclusion.removed}</Tag>}
+                          </>
+                        )}
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {v.createdAt}
+                        </Text>
+                        <Text style={{ fontSize: 12 }}>
+                          {v.operatorName}
+                        </Text>
+                      </Space>
+                      {v.action === 'reject' && v.rejectReason && (
+                        <Alert
+                          type="warning"
+                          showIcon
+                          message="退回原因"
+                          description={v.rejectReason}
+                        />
+                      )}
+                      <Collapse
+                        size="small"
+                        style={{ background: 'transparent' }}
+                        items={[
+                          {
+                            key: `detail-${v.id}`,
+                            label: '查看详情',
+                            children: (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 4 }}>
+                                <div>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>状态</Text>
+                                  <div style={{ marginTop: 2 }}>
+                                    <Tag color={
+                                      v.snapshot.status === 'approved' ? 'green' :
+                                      v.snapshot.status === 'rejected' ? 'red' :
+                                      v.snapshot.status === 'reviewing' ? 'orange' :
+                                      v.snapshot.status === 'submitted' ? 'blue' : 'default'
+                                    }>
+                                      {v.snapshot.status === 'draft' ? '草稿' :
+                                       v.snapshot.status === 'submitted' ? '已提交' :
+                                       v.snapshot.status === 'reviewing' ? '审核中' :
+                                       v.snapshot.status === 'approved' ? '已审核' : '已退回'}
+                                    </Tag>
+                                  </div>
+                                </div>
+                                <div>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>影像所见</Text>
+                                  <div style={{ marginTop: 4, fontSize: 13, lineHeight: 1.6, color: '#d0d0d0' }}>
+                                    {v.snapshot.findings || '（未填写）'}
+                                  </div>
+                                </div>
+                                <div>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>诊断结论</Text>
+                                  <div style={{ marginTop: 4, fontSize: 13, lineHeight: 1.6, color: '#d0d0d0' }}>
+                                    {v.snapshot.conclusion || '（未填写）'}
+                                  </div>
+                                </div>
+                                <div>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>审核医生</Text>
+                                  <div style={{ marginTop: 2, fontSize: 13 }}>
+                                    {v.snapshot.reviewer || v.snapshot.reviewingDoctor || '-'}
+                                  </div>
+                                </div>
+                              </div>
+                            ),
+                          },
+                          prev
+                            ? {
+                                key: `diff-${v.id}`,
+                                label: (
+                                  <Space size={6}>
+                                    <DiffOutlined />
+                                    对比前一版（{prev.createdAt.slice(5, 16)}）
+                                  </Space>
+                                ),
+                                children: (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 4 }}>
+                                    <div>
+                                      <Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>影像所见 · 对比</Text>
+                                      <div style={{ marginTop: 6 }}>
+                                        {renderInlineDiff(prev.snapshot.findings || '', v.snapshot.findings || '')}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>诊断结论 · 对比</Text>
+                                      <div style={{ marginTop: 6 }}>
+                                        {renderInlineDiff(prev.snapshot.conclusion || '', v.snapshot.conclusion || '')}
+                                      </div>
+                                    </div>
+                                  </div>
+                                ),
+                              }
+                            : null,
+                        ].filter(Boolean) as any}
                       />
-                    )}
-                    <Collapse
-                      size="small"
-                      style={{ background: 'transparent' }}
-                      items={[
-                        {
-                          key: v.id,
-                          label: '查看详情',
-                          children: (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 4 }}>
-                              <div>
-                                <Text type="secondary" style={{ fontSize: 12 }}>状态</Text>
-                                <div style={{ marginTop: 2 }}>
-                                  <Tag color={
-                                    v.snapshot.status === 'approved' ? 'green' :
-                                    v.snapshot.status === 'rejected' ? 'red' :
-                                    v.snapshot.status === 'reviewing' ? 'orange' :
-                                    v.snapshot.status === 'submitted' ? 'blue' : 'default'
-                                  }>
-                                    {v.snapshot.status === 'draft' ? '草稿' :
-                                     v.snapshot.status === 'submitted' ? '已提交' :
-                                     v.snapshot.status === 'reviewing' ? '审核中' :
-                                     v.snapshot.status === 'approved' ? '已审核' : '已退回'}
-                                  </Tag>
-                                </div>
-                              </div>
-                              <div>
-                                <Text type="secondary" style={{ fontSize: 12 }}>影像所见</Text>
-                                <div style={{ marginTop: 4, fontSize: 13, lineHeight: 1.6, color: '#d0d0d0' }}>
-                                  {v.snapshot.findings || '（未填写）'}
-                                </div>
-                              </div>
-                              <div>
-                                <Text type="secondary" style={{ fontSize: 12 }}>诊断结论</Text>
-                                <div style={{ marginTop: 4, fontSize: 13, lineHeight: 1.6, color: '#d0d0d0' }}>
-                                  {v.snapshot.conclusion || '（未填写）'}
-                                </div>
-                              </div>
-                              <div>
-                                <Text type="secondary" style={{ fontSize: 12 }}>审核医生</Text>
-                                <div style={{ marginTop: 2, fontSize: 13 }}>
-                                  {v.snapshot.reviewer || v.snapshot.reviewingDoctor || '-'}
-                                </div>
-                              </div>
-                            </div>
-                          ),
-                        },
-                      ]}
-                    />
-                  </Space>
-                </div>
-              ),
-            }))}
+                    </Space>
+                  </div>
+                ),
+              }
+            })}
           />
         )}
       </Drawer>

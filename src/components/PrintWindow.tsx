@@ -50,6 +50,7 @@ import {
   UserOutlined,
   CalendarOutlined,
   FileTextOutlined,
+  SearchOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from '@/stores/appStore'
 import type { Series, Study, PrintJob } from '@/types'
@@ -109,10 +110,31 @@ const PrintWindow: React.FC = () => {
   const [compressionLevel, setCompressionLevel] = useState('lossless')
   const [customLabel, setCustomLabel] = useState('')
   const [previewViewport, setPreviewViewport] = useState<number>(0)
+  const [queueSearchText, setQueueSearchText] = useState('')
+  const [queueStatusFilter, setQueueStatusFilter] = useState<'all' | PrintJob['status']>('all')
 
   const study: Study | undefined = studies.find((s) => s.id === selectedStudyId) || studies[0]
   const studySeries: Series[] = study ? series.filter((s) => s.studyId === study.id) : []
   const layout = layoutPresets[layoutIdx]
+
+  const filteredJobs = useMemo(() => {
+    return printJobs.filter((j) => {
+      if (queueStatusFilter !== 'all' && j.status !== queueStatusFilter) return false
+      if (queueSearchText) {
+        const lower = queueSearchText.toLowerCase()
+        const js = studies.find((s) => s.id === j.studyId)
+        const acc = js?.accessionNumber?.toLowerCase() || ''
+        const pid = js?.patient?.patientId?.toLowerCase() || ''
+        const name = js?.patient?.name?.toLowerCase() || ''
+        if (!acc.includes(lower) && !pid.includes(lower) && !name.includes(lower) && !j.id.toLowerCase().includes(lower))
+          return false
+      }
+      return true
+    })
+  }, [printJobs, queueStatusFilter, queueSearchText, studies])
+
+  const filteredFilmJobs = filteredJobs.filter((j) => j.type === 'film')
+  const filteredDiscJobs = filteredJobs.filter((j) => j.type === 'disc')
 
   if (!study) {
     return (
@@ -222,10 +244,34 @@ const PrintWindow: React.FC = () => {
               strokeColor={job.status === 'printing' ? '#1890ff' : undefined}
             />
           )}
-          <div style={{ marginTop: 6, color: '#707070', fontSize: 11, display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ marginTop: 6, color: '#707070', fontSize: 11, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
             <span>创建: {job.createdAt}</span>
             <span>{job.completedAt ? `完成: ${job.completedAt}` : `序列数: ${job.seriesIds?.length || 0}`}</span>
           </div>
+          {(() => {
+            const js = studies.find((s) => s.id === job.studyId)
+            if (!js) return null
+            return (
+              <div style={{ marginTop: 4, color: '#888', fontSize: 11, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space size={8} wrap>
+                  <Tag color="purple" style={{ margin: 0, fontSize: 10, padding: '0 6px' }}>
+                    {js.accessionNumber}
+                  </Tag>
+                  <span>{js.patient.name}</span>
+                </Space>
+                {js.modality && (
+                  <Tag color="geekblue" style={{ margin: 0, fontSize: 10, padding: '0 6px' }}>
+                    {js.modality}
+                  </Tag>
+                )}
+              </div>
+            )
+          })()}
+          {job.sourceJobId && (
+            <div style={{ marginTop: 4, color: '#fa8c16', fontSize: 11 }}>
+              ↻ 重提自原任务：<span style={{ fontFamily: 'Consolas, monospace' }}>{job.sourceJobId}</span>
+            </div>
+          )}
           {job.errorMessage && (
             <div style={{ marginTop: 4, color: '#ff4d4f', fontSize: 11 }}>错误: {job.errorMessage}</div>
           )}
@@ -375,33 +421,63 @@ const PrintWindow: React.FC = () => {
           <div className="panel-section">
             <div className="panel-title">
               <PrinterOutlined /> 打印 / 刻录 队列
-              <Tag color="blue" style={{ marginLeft: 8 }}>{printJobs.length}</Tag>
+              <Tag color="blue" style={{ marginLeft: 8 }}>{filteredJobs.length}/{printJobs.length}</Tag>
             </div>
             {printJobs.length === 0 ? (
               <Empty description="暂无任务" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: '16px 0' }} />
             ) : (
-              <Tabs
-                size="small"
-                defaultActiveKey="all"
-                style={{ marginTop: -4 }}
-                items={[
-                  {
-                    key: 'all',
-                    label: `全部 (${printJobs.length})`,
-                    children: renderJobList(printJobs, 'all'),
-                  },
-                  {
-                    key: 'film',
-                    label: `胶片 (${printJobs.filter((j) => j.type === 'film').length})`,
-                    children: renderJobList(printJobs.filter((j) => j.type === 'film'), 'film'),
-                  },
-                  {
-                    key: 'disc',
-                    label: `光盘 (${printJobs.filter((j) => j.type === 'disc').length})`,
-                    children: renderJobList(printJobs.filter((j) => j.type === 'disc'), 'disc'),
-                  },
-                ]}
-              />
+              <>
+                <Space style={{ width: '100%', marginBottom: 8 }} size={8} wrap>
+                  <Input
+                    allowClear
+                    size="small"
+                    prefix={<SearchOutlined style={{ color: '#707070' }} />}
+                    placeholder="搜索检查号/患者..."
+                    value={queueSearchText}
+                    onChange={(e) => setQueueSearchText(e.target.value)}
+                    style={{ flex: 1, minWidth: 160 }}
+                  />
+                  <Select
+                    size="small"
+                    value={queueStatusFilter}
+                    onChange={(v) => setQueueStatusFilter(v as any)}
+                    style={{ width: 110 }}
+                    options={[
+                      { value: 'all', label: '全部状态' },
+                      { value: 'queued', label: '排队中' },
+                      { value: 'printing', label: '处理中' },
+                      { value: 'completed', label: '已完成' },
+                      { value: 'failed', label: '失败' },
+                    ]}
+                  />
+                </Space>
+                {filteredJobs.length === 0 ? (
+                  <Empty description="没有匹配的任务" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: '16px 0' }} />
+                ) : (
+                  <Tabs
+                    size="small"
+                    defaultActiveKey="all"
+                    style={{ marginTop: -4 }}
+                    items={[
+                      {
+                        key: 'all',
+                        label: `全部 (${filteredJobs.length})`,
+                        children: renderJobList(filteredJobs, 'all'),
+                      },
+                      {
+                        key: 'film',
+                        label: `胶片 (${filteredFilmJobs.length})`,
+                        children: renderJobList(filteredFilmJobs, 'film'),
+                      },
+                      {
+                        key: 'disc',
+                        label: `光盘 (${filteredDiscJobs.length})`,
+                        children: renderJobList(filteredDiscJobs, 'disc'),
+                      },
+                    ]}
+                  />
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1083,6 +1159,48 @@ const PrintWindow: React.FC = () => {
                     label: '任务ID',
                     children: <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{selectedJob.id}</span>,
                   },
+                  ...(selectedJob.sourceJobId
+                    ? [
+                        {
+                          key: 'source',
+                          label: '原任务',
+                          children: (
+                            <Space size={6}>
+                              <Tag color="orange" style={{ margin: 0, fontSize: 11 }}>↻ 重提任务</Tag>
+                              <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12, color: '#fa8c16' }}>{selectedJob.sourceJobId}</span>
+                              {(() => {
+                                const oldJob = printJobs.find((j) => j.id === selectedJob.sourceJobId)
+                                if (!oldJob) return null
+                                return (
+                                  <Tooltip title={`原任务状态: ${oldJob.status === 'failed' ? '失败' : oldJob.status === 'completed' ? '完成' : oldJob.status === 'printing' ? '处理中' : '排队中'}  · 创建时间: ${oldJob.createdAt}`}>
+                                    <Tag color="default" style={{ fontSize: 10, margin: 0 }}>
+                                      {oldJob.status === 'failed' ? '原任务状态: 失败' : '查看原任务'}
+                                    </Tag>
+                                  </Tooltip>
+                                )
+                              })()}
+                            </Space>
+                          ),
+                        },
+                      ]
+                    : []),
+                  {
+                    key: 'study',
+                    label: '检查信息',
+                    children: (
+                      <Space size={8} wrap>
+                        {jobStudy ? (
+                          <>
+                            <Tag color="purple" style={{ margin: 0 }}>{jobStudy.accessionNumber}</Tag>
+                            <span>{jobStudy.patient.name}</span>
+                            <Tag color="geekblue" style={{ margin: 0 }}>{jobStudy.modality}</Tag>
+                          </>
+                        ) : (
+                          <Text type="secondary">-</Text>
+                        )}
+                      </Space>
+                    ),
+                  },
                   {
                     key: 'type',
                     label: '类型',
@@ -1118,7 +1236,7 @@ const PrintWindow: React.FC = () => {
                     label: selectedJob.type === 'film' ? '胶片大小' : '光盘类型',
                     children: selectedJob.type === 'film' ? (selectedJob.filmSize || '14x17') : (selectedJob.discType || 'DVD'),
                   },
-                ]}
+                ].flat() as any}
               />
 
               <div>

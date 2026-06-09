@@ -95,6 +95,9 @@ interface AppState {
   clearImportData: () => void
   clearPrintJobs: () => void
   clearReports: () => void
+  exportBackupData: (types: Array<'reports' | 'importTasks' | 'printJobs'>) => { version: number; exportedAt: string; reports: Report[]; importTasks: ImportTask[]; printJobs: PrintJob[] }
+  getBackupPreview: (data: any) => { reports: number; importTasks: number; printJobs: number }
+  restoreBackupData: (data: any) => { merged: number; skipped: number }
 
   userSettings: UserSettings
   updateUserSettings: (settings: Partial<UserSettings>) => void
@@ -244,9 +247,14 @@ export const useAppStore = create<AppState>()(
         scheduleImportTask(taskId, { manualMatch: manual })
       },
       removeImportTask: (taskId) => {
-        set((state) => ({
-          importTasks: state.importTasks.filter((t) => t.id !== taskId),
-        }))
+        set((state) => {
+          const remaining = state.importTasks.filter((t) => t.id !== taskId)
+          // 从所有组里移除这个 taskId；如该组变空，也一起删除
+          const newGroups = state.importGroups
+            .map((g) => ({ ...g, fileIds: g.fileIds.filter((fid) => fid !== taskId) }))
+            .filter((g) => g.fileIds.length > 0)
+          return { importTasks: remaining, importGroups: newGroups }
+        })
       },
       getGroupByAccession: (accession) => {
         return get().importGroups.find((g) => g.accessionNumber === accession)
@@ -442,30 +450,45 @@ export const useAppStore = create<AppState>()(
             ...updates,
             updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
           }
-          // 生成版本快照（仅当有内容变化时）
-          const hasChange =
-            (updates.findings && updates.findings !== state.currentReport.findings) ||
-            (updates.conclusion && updates.conclusion !== state.currentReport.conclusion)
-          const newVersion: ReportVersion | null = hasChange
-            ? {
-                id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                reportId: updatedReport.id,
-                studyId: updatedReport.studyId,
-                action: 'save-draft',
-                findings: updatedReport.findings,
-                conclusion: updatedReport.conclusion,
-                status: updatedReport.status,
-                reviewer: updatedReport.reviewer,
-                rejectReason: updatedReport.rejectReason,
-                operatorName: updatedReport.reportingDoctor || '李医生',
-                createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
-                snapshot: { ...updatedReport },
-              }
-            : null
+          // 找前一个同报告的最新版本，计算字符数变更摘要
+          const prev = [...state.reportVersions]
+            .filter((v) => v.reportId === updatedReport.id)
+            .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0]
+          const calc = (cur: string, prevStr: string) => {
+            const c = cur || ''
+            const p = prevStr || ''
+            let added = 0
+            let removed = 0
+            if (c.length > p.length) added = c.length - p.length
+            else if (c.length < p.length) removed = p.length - c.length
+            if (c !== p && added === 0 && removed === 0) added = Math.max(c.length, p.length)
+            return { added, removed }
+          }
+          const findingsDiff = calc(updatedReport.findings, prev?.findings || '')
+          const conclusionDiff = calc(updatedReport.conclusion, prev?.conclusion || '')
+          const changesSummary: ReportVersion['changesSummary'] = {
+            findings: findingsDiff.added + findingsDiff.removed > 0 ? findingsDiff : undefined,
+            conclusion: conclusionDiff.added + conclusionDiff.removed > 0 ? conclusionDiff : undefined,
+          }
+          const newVersion: ReportVersion = {
+            id: `ver_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            reportId: updatedReport.id,
+            studyId: updatedReport.studyId,
+            action: 'save-draft',
+            findings: updatedReport.findings,
+            conclusion: updatedReport.conclusion,
+            status: updatedReport.status,
+            reviewer: updatedReport.reviewer,
+            rejectReason: updatedReport.rejectReason,
+            operatorName: updatedReport.reportingDoctor || '李医生',
+            createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+            changesSummary,
+            snapshot: { ...updatedReport },
+          }
           return {
             currentReport: updatedReport,
             reports: state.reports.map((r) => (r.id === updatedReport.id ? updatedReport : r)),
-            reportVersions: newVersion ? [...state.reportVersions, newVersion] : state.reportVersions,
+            reportVersions: [...state.reportVersions, newVersion],
           }
         })
       },
@@ -613,14 +636,14 @@ export const useAppStore = create<AppState>()(
       retryPrintJob: (jobId) => {
         const old = get().printJobs.find((j) => j.id === jobId)
         if (!old) return null
-        // 复制原任务，创建新的打印任务
-        const { id, status, progress, createdAt, startedAt, completedAt, errorMessage, ...rest } = old
+        const { id, status, progress, createdAt, startedAt, completedAt, errorMessage, sourceJobId, ...rest } = old
         const newJob: PrintJob = {
           ...rest,
           id: `job${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           status: 'queued',
           progress: 0,
           createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+          sourceJobId: old.id,
         }
         set((s) => ({ printJobs: [newJob, ...s.printJobs] }))
         schedulePrintJob(newJob.id)
@@ -632,6 +655,64 @@ export const useAppStore = create<AppState>()(
       clearImportData: () => set({ importTasks: [], importGroups: [] }),
       clearPrintJobs: () => set({ printJobs: [] }),
       clearReports: () => set({ reports: [], currentReport: null, reportVersions: [] }),
+
+      // ============ 本机数据备份 & 恢复 ============
+      exportBackupData: (types) => {
+        const s = get()
+        return {
+          version: 1,
+          exportedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+          reports: types.includes('reports') ? s.reports : [],
+          importTasks: types.includes('importTasks') ? s.importTasks : [],
+          printJobs: types.includes('printJobs') ? s.printJobs : [],
+        }
+      },
+      getBackupPreview: (data) => {
+        return {
+          reports: Array.isArray(data?.reports) ? data.reports.length : 0,
+          importTasks: Array.isArray(data?.importTasks) ? data.importTasks.length : 0,
+          printJobs: Array.isArray(data?.printJobs) ? data.printJobs.length : 0,
+        }
+      },
+      restoreBackupData: (data) => {
+        if (!data || typeof data !== 'object') return { merged: 0, skipped: 0 }
+        let merged = 0
+        let skipped = 0
+        set((state) => {
+          const existingReportIds = new Set(state.reports.map((r) => r.id))
+          const existingImportIds = new Set(state.importTasks.map((t) => t.id))
+          const existingPrintIds = new Set(state.printJobs.map((j) => j.id))
+          const incomingReports = (data.reports || []).filter((r: Report) => !existingReportIds.has(r.id))
+          const incomingImports = (data.importTasks || []).filter((t: ImportTask) => !existingImportIds.has(t.id))
+          const incomingPrints = (data.printJobs || []).filter((j: PrintJob) => !existingPrintIds.has(j.id))
+          merged = incomingReports.length + incomingImports.length + incomingPrints.length
+          skipped =
+            (data.reports?.length || 0) +
+            (data.importTasks?.length || 0) +
+            (data.printJobs?.length || 0) -
+            merged
+          // 导入报告时同时导入其版本（版本数据在 snapshot 里保留）
+          let newGroups = [...state.importGroups]
+          const nowTs = dayjs().format('YYYY-MM-DD HH:mm:ss')
+          incomingImports.forEach((task: ImportTask) => {
+            const acc = task.accessionNumber || `unk-${Date.now()}`
+            let g = newGroups.find((x) => x.accessionNumber === acc)
+            if (!g) {
+              g = { id: `grp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, accessionNumber: acc, fileIds: [], createdAt: nowTs, updatedAt: nowTs }
+              newGroups = [g, ...newGroups]
+            }
+            g.fileIds = [...new Set([...g.fileIds, task.id])]
+            g.updatedAt = nowTs
+          })
+          return {
+            reports: [...state.reports, ...incomingReports],
+            importTasks: [...state.importTasks, ...incomingImports],
+            printJobs: [...state.printJobs, ...incomingPrints],
+            importGroups: newGroups,
+          }
+        })
+        return { merged, skipped }
+      },
 
       userSettings: defaultUserSettings,
       updateUserSettings: (settings) => {
@@ -660,6 +741,38 @@ export const useAppStore = create<AppState>()(
         reportVersions: state.reportVersions,
         importGroups: state.importGroups,
       }),
+      onRehydrateStorage: () => (state, error) => {
+        if (error || !state) return
+        // ========== hydration 后：清理悬空组引用 + 未分组任务自动归组 ==========
+        const nowTs = dayjs().format('YYYY-MM-DD HH:mm:ss')
+        const taskIdSet = new Set(state.importTasks.map((t) => t.id))
+        const existingGrouped = new Set<string>()
+        // 1. 清掉已经被删除 taskId 的引用，同时记录哪些 task 已经在组里
+        const cleanedGroups = state.importGroups
+          .map((g) => ({ ...g, fileIds: g.fileIds.filter((fid) => taskIdSet.has(fid)) }))
+          .filter((g) => g.fileIds.length > 0)
+        cleanedGroups.forEach((g) => g.fileIds.forEach((fid) => existingGrouped.add(fid)))
+        // 2. 还不在任何组里的 task → 按 accessionNumber 归组
+        let finalGroups = [...cleanedGroups]
+        const orphans = state.importTasks.filter((t) => !existingGrouped.has(t.id))
+        orphans.forEach((task) => {
+          const acc = task.accessionNumber || `unk-${Date.now()}`
+          let g = finalGroups.find((x) => x.accessionNumber === acc)
+          if (!g) {
+            g = {
+              id: `grp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+              accessionNumber: acc,
+              fileIds: [],
+              createdAt: nowTs,
+              updatedAt: nowTs,
+            }
+            finalGroups = [g, ...finalGroups]
+          }
+          g.fileIds.push(task.id)
+          g.updatedAt = nowTs
+        })
+        state.importGroups = finalGroups
+      },
     }
   )
 )

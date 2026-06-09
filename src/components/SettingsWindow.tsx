@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import {
   Card,
   Tabs,
@@ -27,6 +27,8 @@ import {
   Form,
   Input as AntInput,
   App as AntApp,
+  Checkbox,
+  Upload,
 } from 'antd'
 import {
   SettingOutlined,
@@ -44,8 +46,11 @@ import {
   CheckCircleOutlined,
   GlobalOutlined,
   LayoutOutlined,
+  ExportOutlined,
+  ImportOutlined,
+  FileZipOutlined,
 } from '@ant-design/icons'
-import type { TabsProps } from 'antd'
+import type { TabsProps, UploadProps } from 'antd'
 import { useAppStore } from '@/stores/appStore'
 import { defaultLayouts } from '@/data/mockData'
 import type { LayoutPreset, ShortcutConfig } from '@/types'
@@ -67,6 +72,9 @@ const SettingsWindow: React.FC = () => {
     clearImportData,
     clearPrintJobs,
     clearReports,
+    exportBackupData,
+    getBackupPreview,
+    restoreBackupData,
   } = useAppStore()
   const { message: antMessage } = AntApp.useApp()
 
@@ -76,6 +84,16 @@ const SettingsWindow: React.FC = () => {
   const [capturingKeys, setCapturingKeys] = useState(false)
   const [capturedKeys, setCapturedKeys] = useState<string[]>([])
   const captureRef = React.useRef<HTMLDivElement>(null)
+
+  // 导出备份：勾选类型
+  const [exportTypes, setExportTypes] = useState<Array<'reports' | 'importTasks' | 'printJobs'>>([
+    'reports',
+    'importTasks',
+    'printJobs',
+  ])
+  // 恢复备份：预览数据
+  const [restorePreview, setRestorePreview] = useState<{ reports: number; importTasks: number; printJobs: number; raw: any } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const tabItems: TabsProps['items'] = [
     {
@@ -816,6 +834,235 @@ const SettingsWindow: React.FC = () => {
               )}
             />
           </Card>
+
+          <Divider />
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Card
+                size="small"
+                title={
+                  <Space>
+                    <ExportOutlined />
+                    导出备份
+                  </Space>
+                }
+                extra={
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    生成 JSON 备份文件
+                  </Text>
+                }
+              >
+                <Alert
+                  type="info"
+                  showIcon
+                  message="勾选需要备份的数据类型，导出的 JSON 文件可在其他工作站恢复。"
+                  style={{ marginBottom: 16 }}
+                />
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Checkbox
+                    checked={exportTypes.includes('reports')}
+                    onChange={(e) => {
+                      if (e.target.checked) setExportTypes([...exportTypes, 'reports'])
+                      else setExportTypes(exportTypes.filter((t) => t !== 'reports'))
+                    }}
+                  >
+                    <Space>
+                      诊断报告数据
+                      <Tag color="blue">{reports.length} 条</Tag>
+                      <Text type="secondary" style={{ fontSize: 11 }}>（含历史版本）</Text>
+                    </Space>
+                  </Checkbox>
+                  <Checkbox
+                    checked={exportTypes.includes('importTasks')}
+                    onChange={(e) => {
+                      if (e.target.checked) setExportTypes([...exportTypes, 'importTasks'])
+                      else setExportTypes(exportTypes.filter((t) => t !== 'importTasks'))
+                    }}
+                  >
+                    <Space>
+                      影像导入记录
+                      <Tag color="purple">{importTasks.length} 条</Tag>
+                    </Space>
+                  </Checkbox>
+                  <Checkbox
+                    checked={exportTypes.includes('printJobs')}
+                    onChange={(e) => {
+                      if (e.target.checked) setExportTypes([...exportTypes, 'printJobs'])
+                      else setExportTypes(exportTypes.filter((t) => t !== 'printJobs'))
+                    }}
+                  >
+                    <Space>
+                      打印刻录任务
+                      <Tag color="orange">{printJobs.length} 条</Tag>
+                    </Space>
+                  </Checkbox>
+                  <Checkbox
+                    checked={exportTypes.length === 3}
+                    indeterminate={exportTypes.length > 0 && exportTypes.length < 3}
+                    onChange={(e) => {
+                      if (e.target.checked) setExportTypes(['reports', 'importTasks', 'printJobs'])
+                      else setExportTypes([])
+                    }}
+                  >
+                    <Text strong>全选</Text>
+                  </Checkbox>
+                </Space>
+                <Divider style={{ margin: '16px 0' }} />
+                <Button
+                  type="primary"
+                  block
+                  icon={<ExportOutlined />}
+                  disabled={exportTypes.length === 0}
+                  onClick={() => {
+                    const data = exportBackupData(exportTypes)
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `pacs-backup-${new Date().toISOString().slice(0, 10)}-${Date.now()}.json`
+                    document.body.appendChild(a)
+                    a.click()
+                    document.body.removeChild(a)
+                    URL.revokeObjectURL(url)
+                    message.success('备份文件已导出，共 ' + (data.reports.length + data.importTasks.length + data.printJobs.length) + ' 条数据')
+                  }}
+                >
+                  导出备份文件
+                </Button>
+              </Card>
+            </Col>
+
+            <Col span={12}>
+              <Card
+                size="small"
+                title={
+                  <Space>
+                    <ImportOutlined />
+                    恢复备份
+                  </Space>
+                }
+                extra={
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    从 JSON 文件合并
+                  </Text>
+                }
+              >
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="恢复将合并到当前数据，相同 ID 的记录会自动跳过，不会覆盖。"
+                  style={{ marginBottom: 16 }}
+                />
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept=".json,application/json"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (!file) return
+                    const reader = new FileReader()
+                    reader.onload = () => {
+                      try {
+                        const json = JSON.parse(String(reader.result))
+                        const preview = getBackupPreview(json)
+                        if (preview.reports + preview.importTasks + preview.printJobs === 0) {
+                          message.error('文件为空或格式不正确')
+                          return
+                        }
+                        setRestorePreview({ ...preview, raw: json })
+                        message.success('已解析备份文件')
+                      } catch (err) {
+                        message.error('文件解析失败，请确认是有效的 PACS 备份 JSON 文件')
+                      }
+                    }
+                    reader.readAsText(file)
+                  }}
+                />
+                {!restorePreview ? (
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      border: '2px dashed #303030',
+                      borderRadius: 8,
+                      padding: '40px 20px',
+                      textAlign: 'center',
+                      cursor: 'pointer',
+                      background: 'transparent',
+                      transition: 'all .2s',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = '#1890ff'
+                      e.currentTarget.style.background = 'rgba(24,144,255,0.04)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = '#303030'
+                      e.currentTarget.style.background = 'transparent'
+                    }}
+                  >
+                    <FileZipOutlined style={{ fontSize: 40, color: '#707070', marginBottom: 8 }} />
+                    <div style={{ fontWeight: 600 }}>点击选择备份文件</div>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+                      支持 .json 格式的 PACS 备份文件
+                    </Text>
+                  </div>
+                ) : (
+                  <>
+                    <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
+                      <Card size="small" style={{ background: '#1a1a1a', border: '1px solid #303030' }}>
+                        <div style={{ fontSize: 12, color: '#a0a0a0', marginBottom: 10 }}>文件预览（待恢复数据）</div>
+                        <Row gutter={12}>
+                          <Col span={8} style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 20, fontWeight: 600, color: '#1890ff' }}>{restorePreview.reports}</div>
+                            <Text type="secondary" style={{ fontSize: 11 }}>报告</Text>
+                          </Col>
+                          <Col span={8} style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 20, fontWeight: 600, color: '#722ed1' }}>{restorePreview.importTasks}</div>
+                            <Text type="secondary" style={{ fontSize: 11 }}>导入记录</Text>
+                          </Col>
+                          <Col span={8} style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 20, fontWeight: 600, color: '#fa8c16' }}>{restorePreview.printJobs}</div>
+                            <Text type="secondary" style={{ fontSize: 11 }}>打印任务</Text>
+                          </Col>
+                        </Row>
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #303030', fontSize: 11, color: '#707070' }}>
+                          合计：{restorePreview.reports + restorePreview.importTasks + restorePreview.printJobs} 条
+                        </div>
+                      </Card>
+                    </Space>
+                    <Space style={{ width: '100%' }}>
+                      <Button
+                        style={{ flex: 1 }}
+                        onClick={() => {
+                          setRestorePreview(null)
+                          if (fileInputRef.current) fileInputRef.current.value = ''
+                        }}
+                      >
+                        重新选择
+                      </Button>
+                      <Popconfirm
+                        title="确认合并备份数据？"
+                        description={`将向当前工作站合并 ${restorePreview.reports + restorePreview.importTasks + restorePreview.printJobs} 条数据，已有相同 ID 的记录将自动跳过。`}
+                        okText="确认合并"
+                        cancelText="取消"
+                        onConfirm={() => {
+                          const res = restoreBackupData(restorePreview.raw)
+                          message.success(`恢复完成：合并 ${res.merged} 条，跳过 ${res.skipped} 条（ID 重复）`)
+                          setRestorePreview(null)
+                          if (fileInputRef.current) fileInputRef.current.value = ''
+                        }}
+                      >
+                        <Button type="primary" icon={<ImportOutlined />}>
+                          开始恢复
+                        </Button>
+                      </Popconfirm>
+                    </Space>
+                  </>
+                )}
+              </Card>
+            </Col>
+          </Row>
         </div>
       ),
     },

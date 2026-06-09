@@ -182,6 +182,8 @@ export interface PrintJob {
   printerName?: string
   filmSize?: string
   discType?: string
+  /** 重提任务时记录原任务 ID，便于追溯 */
+  sourceJobId?: string
 }
 
 export type WindowName =
@@ -226,6 +228,11 @@ export interface ReportVersion {
   rejectReason?: string
   operatorName: string
   createdAt: string
+  /** 变更摘要：与前一版对比（字符数变化） */
+  changesSummary?: {
+    findings?: { added: number; removed: number }
+    conclusion?: { added: number; removed: number }
+  }
   /** 快照时的报告完整信息，方便回显 */
   snapshot: Partial<Report>
 }
